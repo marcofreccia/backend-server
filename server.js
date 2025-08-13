@@ -21,11 +21,41 @@ app.get('/', (req, res) => {
   });
 });
 
+// Health check routes
+app.get('/health', (req, res) => {
+  res.json({
+    status: 'OK',
+    uptime: process.uptime(),
+    timestamp: new Date().toISOString()
+  });
+});
+
 app.get('/api/health', (req, res) => {
   res.json({
     status: 'OK',
     uptime: process.uptime(),
     timestamp: new Date().toISOString()
+  });
+});
+
+// Product API routes
+app.get('/api/products/sku/:sku', (req, res) => {
+  const { sku } = req.params;
+  
+  // Mock product data for demonstration
+  const mockProduct = {
+    sku: sku,
+    name: `Product ${sku}`,
+    price: Math.floor(Math.random() * 100) + 10,
+    description: `This is a mock product with SKU ${sku}`,
+    inStock: Math.random() > 0.5,
+    category: 'General',
+    timestamp: new Date().toISOString()
+  };
+  
+  res.json({
+    success: true,
+    data: mockProduct
   });
 });
 
@@ -35,8 +65,10 @@ app.get('/api', (req, res) => {
     message: 'API endpoint',
     endpoints: [
       'GET /',
+      'GET /health',
       'GET /api',
-      'GET /api/health'
+      'GET /api/health',
+      'GET /api/products/sku/:sku'
     ]
   });
 });
@@ -58,9 +90,11 @@ app.use('*', (req, res) => {
   });
 });
 
-// Start server
-app.listen(PORT, () => {
+// Start server with host 0.0.0.0 for Railway compatibility
+app.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 Server is running on port ${PORT}`);
   console.log(`📍 Environment: ${process.env.NODE_ENV || 'development'}`);
-  console.log(`🔗 http://localhost:${PORT}`);
+  console.log(`🔗 http://0.0.0.0:${PORT}`);
+  console.log(`💚 Health check available at /health`);
+  console.log(`🛒 Product API available at /api/products/sku/:sku`);
 });
