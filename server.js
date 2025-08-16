@@ -41,7 +41,6 @@ async function fetchMSYListino() {
 }
 
 function normalizzaProdotto(item) {
-  // Adatta questa funzione se la struttura MSY cambia
   return {
     sku: item.SKU,
     name: item.name,
@@ -52,7 +51,7 @@ function normalizzaProdotto(item) {
   };
 }
 
-// ----- INTEGRAZIONE API ECWID (SIMPLE VERSION) -----
+// ----- INTEGRAZIONE API ECWID -----
 async function syncProdottoToEcwid(prodotto) {
   const apiBase = `https://app.ecwid.com/api/v3/${ECWID_STORE_ID}/products`;
   const optionsAuth = { headers: { Authorization: `Bearer ${ECWID_SECRET_TOKEN}`, 'Content-Type': 'application/json' } };
