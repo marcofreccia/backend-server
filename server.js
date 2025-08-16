@@ -1,3 +1,11 @@
+// Global error handling
+process.on('unhandledRejection', (reason, p) => {
+  console.error('Unhandled Rejection at:', p, 'reason:', reason);
+});
+process.on('uncaughtException', (err) => {
+  console.error('Uncaught Exception thrown:', err);
+});
+
 // Import required modules
 const express = require('express');
 const cors = require('cors');
@@ -91,7 +99,7 @@ async function fetchFromMSY(endpoint, options = {}) {
   } catch (error) {
     // Only log error if it's not about missing API key for public endpoints
     if (!error.message.includes('401') || (process.env.MSY_API_KEY && process.env.MSY_API_KEY.trim() !== '')) {
-      console.error(`Error fetching from MSY: ${error.message}`);
+      console.error('Critical error', error);
     }
     throw error;
   }
@@ -129,7 +137,7 @@ async function fetchFromEcwid(endpoint, options = {}) {
     
     return data;
   } catch (error) {
-    console.error(`Error fetching from Ecwid: ${error.message}`);
+    console.error('Critical error', error);
     throw error;
   }
 }
@@ -146,7 +154,7 @@ app.get('/api/products/sku/:sku', async (req, res) => {
     const product = await fetchFromMSY(`/products/sku/${sku}`);
     res.json(product);
   } catch (error) {
-    console.error('Error fetching product:', error);
+    console.error('Critical error', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -176,7 +184,7 @@ app.get('/sync/preview', async (req, res) => {
 
     res.json(preview);
   } catch (error) {
-    console.error('Error during preview:', error);
+    console.error('Critical error', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -243,7 +251,7 @@ app.post('/sync/msy-to-ecwid', async (req, res) => {
           });
         }
       } catch (productError) {
-        console.error(`Error syncing product ${msyProduct.sku}:`, productError);
+        console.error('Critical error', productError);
         syncResults.push({
           sku: msyProduct.sku,
           action: 'error',
@@ -265,14 +273,14 @@ app.post('/sync/msy-to-ecwid', async (req, res) => {
       timestamp: new Date().toISOString()
     });
   } catch (error) {
-    console.error('Error during sync:', error);
+    console.error('Critical error', error);
     res.status(500).json({ error: error.message });
   }
 });
 
 // Error handling middleware
 app.use((err, req, res, next) => {
-  console.error(err.stack);
+  console.error('Critical error', err);
   res.status(500).json({ error: 'Something went wrong!' });
 });
 
