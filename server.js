@@ -49,66 +49,87 @@ app.get('/api', (req, res) => {
   });
 });
 
-// API health route
+// API health check
 app.get('/api/health', (req, res) => {
   res.json({
     status: 'OK',
-    api_version: '2.0.0',
-    timestamp: new Date().toISOString()
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime()
   });
 });
 
-// MSY API configuration
-const MSY_BASE_URL = 'https://api.msy.com.au';
-const MSY_API_KEY = process.env.MSY_API_KEY;
-const ECWID_STORE_ID = process.env.ECWID_STORE_ID;
-const ECWID_SECRET_TOKEN = process.env.ECWID_SECRET_TOKEN;
-const ECWID_PUBLIC_TOKEN = process.env.ECWID_PUBLIC_TOKEN;
+// Helper function to fetch from MSY API
+async function fetchFromMSY(endpoint, options = {}) {
+  const baseUrl = 'https://api.msy.com.au';
+  const url = `${baseUrl}${endpoint}`;
+  
+  const headers = {
+    'Content-Type': 'application/json',
+    ...options.headers
+  };
 
-// Helper function to make MSY API calls
-async function msyApiCall(endpoint, options = {}) {
+  // Only add Authorization header if MSY_API_KEY is present and not empty
+  if (process.env.MSY_API_KEY && process.env.MSY_API_KEY.trim() !== '') {
+    headers['Authorization'] = `Bearer ${process.env.MSY_API_KEY}`;
+  }
+
+  const requestOptions = {
+    method: options.method || 'GET',
+    headers,
+    ...options
+  };
+
   try {
-    const url = `${MSY_BASE_URL}${endpoint}`;
-    const response = await fetch(url, {
-      headers: {
-        'Authorization': `Bearer ${MSY_API_KEY}`,
-        'Content-Type': 'application/json',
-        ...options.headers
-      },
-      ...options
-    });
+    const response = await fetch(url, requestOptions);
+    const data = await response.json();
     
     if (!response.ok) {
-      throw new Error(`MSY API Error: ${response.status} - ${response.statusText}`);
+      throw new Error(`MSY API error: ${response.status} - ${data.message || 'Unknown error'}`);
     }
     
-    return await response.json();
+    return data;
   } catch (error) {
-    console.error('MSY API Call Error:', error);
+    // Only log error if it's not about missing API key for public endpoints
+    if (!error.message.includes('401') || (process.env.MSY_API_KEY && process.env.MSY_API_KEY.trim() !== '')) {
+      console.error(`Error fetching from MSY: ${error.message}`);
+    }
     throw error;
   }
 }
 
-// Helper function to make Ecwid API calls
-async function ecwidApiCall(endpoint, options = {}) {
+// Helper function to fetch from Ecwid API
+async function fetchFromEcwid(endpoint, options = {}) {
+  const storeId = process.env.ECWID_STORE_ID;
+  const token = process.env.ECWID_SECRET_TOKEN;
+  
+  if (!storeId || !token) {
+    throw new Error('Ecwid credentials not configured');
+  }
+
+  const baseUrl = `https://app.ecwid.com/api/v3/${storeId}`;
+  const url = `${baseUrl}${endpoint}`;
+  
+  const requestOptions = {
+    method: options.method || 'GET',
+    headers: {
+      'Authorization': `Bearer ${token}`,
+      'Content-Type': 'application/json',
+      ...options.headers
+    },
+    ...options
+  };
+
   try {
-    const url = `https://app.ecwid.com/api/v3/${ECWID_STORE_ID}${endpoint}`;
-    const response = await fetch(url, {
-      headers: {
-        'Authorization': `Bearer ${ECWID_SECRET_TOKEN}`,
-        'Content-Type': 'application/json',
-        ...options.headers
-      },
-      ...options
-    });
+    const response = await fetch(url, requestOptions);
+    const data = await response.json();
     
     if (!response.ok) {
-      throw new Error(`Ecwid API Error: ${response.status} - ${response.statusText}`);
+      throw new Error(`Ecwid API error: ${response.status} - ${data.errorMessage || 'Unknown error'}`);
     }
     
-    return await response.json();
+    return data;
   } catch (error) {
-    console.error('Ecwid API Call Error:', error);
+    console.error(`Error fetching from Ecwid: ${error.message}`);
     throw error;
   }
 }
@@ -121,8 +142,8 @@ app.get('/api/products/sku/:sku', async (req, res) => {
     if (!sku) {
       return res.status(400).json({ error: 'SKU is required' });
     }
-    
-    const product = await msyApiCall(`/products/sku/${sku}`);
+
+    const product = await fetchFromMSY(`/products/sku/${sku}`);
     res.json(product);
   } catch (error) {
     console.error('Error fetching product:', error);
@@ -130,23 +151,32 @@ app.get('/api/products/sku/:sku', async (req, res) => {
   }
 });
 
-// Preview sync data
+// Preview sync - show what would be synced without actually syncing
 app.get('/sync/preview', async (req, res) => {
   try {
-    // Get sample MSY products
-    const msyProducts = await msyApiCall('/products?limit=10');
+    // Fetch products from MSY
+    const msyProducts = await fetchFromMSY('/products');
     
-    // Get sample Ecwid products
-    const ecwidProducts = await ecwidApiCall('/products?limit=10');
-    
-    res.json({
-      message: 'Sync preview data',
-      msy_products: msyProducts,
-      ecwid_products: ecwidProducts,
+    if (!msyProducts || !msyProducts.data) {
+      return res.status(404).json({ error: 'No products found in MSY' });
+    }
+
+    // Preview data
+    const preview = {
+      total_products: msyProducts.data.length,
+      products: msyProducts.data.map(product => ({
+        sku: product.sku,
+        name: product.name,
+        price: product.price,
+        stock: product.stock,
+        category: product.category
+      })),
       timestamp: new Date().toISOString()
-    });
+    };
+
+    res.json(preview);
   } catch (error) {
-    console.error('Error generating sync preview:', error);
+    console.error('Error during preview:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -154,56 +184,62 @@ app.get('/sync/preview', async (req, res) => {
 // Sync products from MSY to Ecwid
 app.post('/sync/msy-to-ecwid', async (req, res) => {
   try {
-    // Get all products from MSY
-    const msyProducts = await msyApiCall('/products');
+    // Fetch products from MSY
+    const msyProducts = await fetchFromMSY('/products');
     
-    if (!msyProducts || !Array.isArray(msyProducts.data)) {
-      return res.status(400).json({ error: 'No products found from MSY API' });
+    if (!msyProducts || !msyProducts.data) {
+      return res.status(404).json({ error: 'No products found in MSY' });
     }
-    
+
     const syncResults = [];
     
+    // Process each product
     for (const msyProduct of msyProducts.data) {
       try {
-        // Check if product exists in Ecwid by SKU
-        const existingProduct = await ecwidApiCall(`/products?sku=${msyProduct.sku}`);
-        
-        // Transform MSY product data to Ecwid format
-        const ecwidProductData = {
-          name: msyProduct.name,
-          description: msyProduct.description || '',
+        // Check if product exists in Ecwid
+        let ecwidProduct;
+        try {
+          const existingProducts = await fetchFromEcwid(`/products?sku=${msyProduct.sku}`);
+          ecwidProduct = existingProducts.items && existingProducts.items.length > 0 ? existingProducts.items[0] : null;
+        } catch (error) {
+          // Product doesn't exist, will create new one
+          ecwidProduct = null;
+        }
+
+        const productData = {
           sku: msyProduct.sku,
-          price: parseFloat(msyProduct.price) || 0,
-          quantity: parseInt(msyProduct.stock) || 0,
+          name: msyProduct.name,
+          price: msyProduct.price,
+          description: msyProduct.description,
           enabled: true,
-          categories: msyProduct.category ? [{ name: msyProduct.category }] : []
+          quantity: msyProduct.stock || 0,
+          categories: msyProduct.category ? [{ id: msyProduct.category }] : []
         };
-        
+
         let result;
-        if (existingProduct && existingProduct.items && existingProduct.items.length > 0) {
+        if (ecwidProduct) {
           // Update existing product
-          const productId = existingProduct.items[0].id;
-          result = await ecwidApiCall(`/products/${productId}`, {
+          result = await fetchFromEcwid(`/products/${ecwidProduct.id}`, {
             method: 'PUT',
-            body: JSON.stringify(ecwidProductData)
+            body: JSON.stringify(productData)
           });
           syncResults.push({
             sku: msyProduct.sku,
             action: 'updated',
             success: true,
-            productId
+            ecwid_id: ecwidProduct.id
           });
         } else {
           // Create new product
-          result = await ecwidApiCall('/products', {
+          result = await fetchFromEcwid('/products', {
             method: 'POST',
-            body: JSON.stringify(ecwidProductData)
+            body: JSON.stringify(productData)
           });
           syncResults.push({
             sku: msyProduct.sku,
             action: 'created',
             success: true,
-            productId: result.id
+            ecwid_id: result.id
           });
         }
       } catch (productError) {
@@ -251,12 +287,19 @@ app.listen(PORT, () => {
   console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
   
   // Verify environment variables
-  const requiredEnvVars = ['MSY_API_KEY', 'ECWID_STORE_ID', 'ECWID_SECRET_TOKEN'];
+  const requiredEnvVars = ['ECWID_STORE_ID', 'ECWID_SECRET_TOKEN'];
   const missingVars = requiredEnvVars.filter(varName => !process.env[varName]);
   
   if (missingVars.length > 0) {
     console.warn('Warning: Missing environment variables:', missingVars.join(', '));
   } else {
     console.log('All required environment variables are set');
+  }
+  
+  // MSY_API_KEY is now optional for public endpoints
+  if (!process.env.MSY_API_KEY || process.env.MSY_API_KEY.trim() === '') {
+    console.log('MSY_API_KEY not set - will work for public endpoints only');
+  } else {
+    console.log('MSY_API_KEY is configured');
   }
 });
