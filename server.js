@@ -1,3 +1,4 @@
+// ----- GLOBAL ERROR HANDLING -----
 process.on('unhandledRejection', (reason, p) => {
   console.error('Unhandled Rejection at:', p, 'reason:', reason);
 });
@@ -5,22 +6,26 @@ process.on('uncaughtException', (err) => {
   console.error('Uncaught Exception thrown:', err);
 });
 
+// ----- IMPORT & CONFIG -----
 require('dotenv').config();
 const express = require('express');
 const fetch = require('node-fetch');
 const app = express();
 app.use(express.json());
 
+// ----- MIDDLEWARE LOGGING GLOBALE -----
 app.use((req, res, next) => {
   console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
   next();
 });
 
+// ----- CHECK VARIABILI AMBIENTE -----
 const { ECWID_STORE_ID, ECWID_SECRET_TOKEN } = process.env;
 if (!ECWID_STORE_ID || !ECWID_SECRET_TOKEN) {
   throw new Error('Missing Ecwid environment variables');
 }
 
+// ----- FUNZIONE FETCH + PARSING MSY -----
 async function fetchMSYListino() {
   try {
     console.log('Inizio fetch listino MSY');
@@ -46,6 +51,7 @@ function normalizzaProdotto(item) {
   };
 }
 
+// ----- INTEGRAZIONE API ECWID -----
 async function syncProdottoToEcwid(prodotto) {
   const apiBase = `https://app.ecwid.com/api/v3/${ECWID_STORE_ID}/products`;
   const optionsAuth = { headers: { Authorization: `Bearer ${ECWID_SECRET_TOKEN}`, 'Content-Type': 'application/json' } };
@@ -54,6 +60,7 @@ async function syncProdottoToEcwid(prodotto) {
     const checkResp = await fetch(`${apiBase}?sku=${encodeURIComponent(sku)}`, optionsAuth);
     const checkData = await checkResp.json();
     if (checkData && checkData.items && checkData.items.length > 0) {
+      // Update via PUT/PATCH
       const prodId = checkData.items[0].id;
       console.log(`Aggiorno prodotto Ecwid id=${prodId}, SKU=${sku}`);
       await fetch(`${apiBase}/${prodId}`, {
@@ -62,6 +69,7 @@ async function syncProdottoToEcwid(prodotto) {
         body: JSON.stringify(prodotto)
       });
     } else {
+      // Create via POST
       console.log(`Creo nuovo prodotto Ecwid SKU=${sku}`);
       await fetch(apiBase, {
         ...optionsAuth,
@@ -76,6 +84,7 @@ async function syncProdottoToEcwid(prodotto) {
   }
 }
 
+// ----- ROUTE: SYNC MANUALE & LOGGING -----
 app.post('/sync/msy-to-ecwid', async (req, res) => {
   try {
     console.log('= SYNC MSY → ECWID AVVIATA =');
@@ -94,6 +103,7 @@ app.post('/sync/msy-to-ecwid', async (req, res) => {
   }
 });
 
+// ----- ROUTE DI TEST, HEALTH, DIAGNOSTICA -----
 app.get('/health', (req, res) => res.json({ status: 'OK', now: new Date() }));
 
 app.get('/api/products/sku/:sku', async (req, res) => {
@@ -111,16 +121,19 @@ app.get('/api/products/sku/:sku', async (req, res) => {
   }
 });
 
+// ----- CATCH GLOBALE -----
 app.use((err, req, res, next) => {
   console.error('CATCH GLOBALE:', err);
   res.status(500).json({ error: 'Errore server', detail: err.message });
 });
 
+// ----- AVVIO SERVER -----
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () =>
   console.log(`Server MSY→Ecwid pronto su http://localhost:${PORT}`)
 );
 
+// ----- (OPZIONALE) SCHEDULER AUTOMATICO -----
 /*
 setInterval(async () => {
   try {
