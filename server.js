@@ -1,4 +1,4 @@
-// Global error handling
+// ----- GLOBAL ERROR HANDLING -----
 process.on('unhandledRejection', (reason, p) => {
   console.error('Unhandled Rejection at:', p, 'reason:', reason);
 });
@@ -6,7 +6,6 @@ process.on('uncaughtException', (err) => {
   console.error('Uncaught Exception thrown:', err);
 });
 
-// Import required modules
 // ----- IMPORT & CONFIG -----
 require('dotenv').config();
 const express = require('express');
@@ -18,14 +17,6 @@ app.use(express.json());
 app.use((req, res, next) => {
   console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
   next();
-});
-
-// ----- DIAGNOSTICA—CATCH GLOBALI NODE -----
-process.on('unhandledRejection', (reason, p) => {
-  console.error('Unhandled Rejection at:', p, 'reason:', reason);
-});
-process.on('uncaughtException', (err) => {
-  console.error('Uncaught Exception thrown:', err);
 });
 
 // ----- CHECK VARIABILI AMBIENTE -----
@@ -65,15 +56,11 @@ function normalizzaProdotto(item) {
 async function syncProdottoToEcwid(prodotto) {
   const apiBase = `https://app.ecwid.com/api/v3/${ECWID_STORE_ID}/products`;
   const optionsAuth = { headers: { Authorization: `Bearer ${ECWID_SECRET_TOKEN}`, 'Content-Type': 'application/json' } };
-
-  // 1. Verifica se prodotto già presente
   const sku = prodotto.sku;
   try {
     let found = false;
-
     const checkResp = await fetch(`${apiBase}?sku=${encodeURIComponent(sku)}`, optionsAuth);
     const checkData = await checkResp.json();
-
     if (checkData && checkData.items && checkData.items.length > 0) {
       found = true;
       // Update via PUT/PATCH
@@ -103,7 +90,7 @@ async function syncProdottoToEcwid(prodotto) {
 // ----- ROUTE: SYNC MANUALE & LOGGING -----
 app.post('/sync/msy-to-ecwid', async (req, res) => {
   try {
-    console.log('=== SYNC MSY → ECWID AVVIATA ===');
+    console.log('= SYNC MSY → ECWID AVVIATA =');
     const listino = await fetchMSYListino();
     const risultati = [];
     for (const item of listino) {
@@ -111,7 +98,7 @@ app.post('/sync/msy-to-ecwid', async (req, res) => {
       const esito = await syncProdottoToEcwid(prodotto);
       risultati.push(esito);
     }
-    console.log('=== SYNC COMPLETATA ===', risultati.length, 'prodotti sincronizzati');
+    console.log('= SYNC COMPLETATA =', risultati.length, 'prodotti sincronizzati');
     res.json({ success: true, risultati });
   } catch (error) {
     console.error('Errore in /sync/msy-to-ecwid:', error);
@@ -160,3 +147,4 @@ setInterval(async () => {
   }
 }, 1000 * 60 * 60); // ogni ora
 */
+
