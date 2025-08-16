@@ -7,307 +7,158 @@ process.on('uncaughtException', (err) => {
 });
 
 // Import required modules
-const express = require('express');
-const cors = require('cors');
-const fetch = require('node-fetch');
+// ----- IMPORT & CONFIG -----
 require('dotenv').config();
-
-// Initialize Express app
+const express = require('express');
+const fetch = require('node-fetch');
 const app = express();
-const PORT = process.env.PORT || 3000;
-
-// Middleware
-app.use(cors());
 app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
 
-// Basic routes
-app.get('/', (req, res) => {
-  res.json({
-    message: 'Backend Server is running!',
-    version: '2.0.0',
-    timestamp: new Date().toISOString(),
-    endpoints: [
-      'GET /',
-      'GET /health',
-      'GET /api',
-      'GET /api/health',
-      'GET /api/products/sku/:sku',
-      'GET /sync/preview',
-      'POST /sync/msy-to-ecwid'
-    ]
-  });
+// ----- MIDDLEWARE LOGGING GLOBALE -----
+app.use((req, res, next) => {
+  console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
+  next();
 });
 
-// Health check routes
-app.get('/health', (req, res) => {
-  res.json({
-    status: 'OK',
-    timestamp: new Date().toISOString(),
-    uptime: process.uptime()
-  });
+// ----- DIAGNOSTICA—CATCH GLOBALI NODE -----
+process.on('unhandledRejection', (reason, p) => {
+  console.error('Unhandled Rejection at:', p, 'reason:', reason);
+});
+process.on('uncaughtException', (err) => {
+  console.error('Uncaught Exception thrown:', err);
 });
 
-// API base route
-app.get('/api', (req, res) => {
-  res.json({
-    message: 'API is running!',
-    version: '2.0.0',
-    timestamp: new Date().toISOString()
-  });
-});
+// ----- CHECK VARIABILI AMBIENTE -----
+const { ECWID_STORE_ID, ECWID_SECRET_TOKEN } = process.env;
+if (!ECWID_STORE_ID || !ECWID_SECRET_TOKEN) {
+  throw new Error('Missing Ecwid environment variables');
+}
 
-// API health check
-app.get('/api/health', (req, res) => {
-  res.json({
-    status: 'OK',
-    timestamp: new Date().toISOString(),
-    uptime: process.uptime()
-  });
-});
-
-// Helper function to fetch from MSY API
-async function fetchFromMSY(endpoint, options = {}) {
-  const baseUrl = 'https://api.msy.com.au';
-  const url = `${baseUrl}${endpoint}`;
-  
-  const headers = {
-    'Content-Type': 'application/json',
-    ...options.headers
-  };
-
-  // Only add Authorization header if MSY_API_KEY is present and not empty
-  if (process.env.MSY_API_KEY && process.env.MSY_API_KEY.trim() !== '') {
-    headers['Authorization'] = `Bearer ${process.env.MSY_API_KEY}`;
-  }
-
-  const requestOptions = {
-    method: options.method || 'GET',
-    headers,
-    ...options
-  };
-
+// ----- FUNZIONE FETCH + PARSING MSY -----
+async function fetchMSYListino() {
   try {
-    const response = await fetch(url, requestOptions);
-    const data = await response.json();
-    
-    if (!response.ok) {
-      throw new Error(`MSY API error: ${response.status} - ${data.message || 'Unknown error'}`);
-    }
-    
-    return data;
+    console.log('Inizio fetch listino MSY');
+    const response = await fetch('https://msy.madtec.be/price_list/pricelist_en.json');
+    if (!response.ok) throw new Error('Errore fetch listino MSY');
+    const listino = await response.json();
+    console.log('Listino MSY scaricato e parsato:', listino.length, 'prodotti');
+    return listino;
   } catch (error) {
-    // Only log error if it's not about missing API key for public endpoints
-    if (!error.message.includes('401') || (process.env.MSY_API_KEY && process.env.MSY_API_KEY.trim() !== '')) {
-      console.error('Critical error', error);
-    }
+    console.error('Errore fetchMSYListino:', error);
     throw error;
   }
 }
 
-// Helper function to fetch from Ecwid API
-async function fetchFromEcwid(endpoint, options = {}) {
-  const storeId = process.env.ECWID_STORE_ID;
-  const token = process.env.ECWID_SECRET_TOKEN;
-  
-  if (!storeId || !token) {
-    throw new Error('Ecwid credentials not configured');
-  }
-
-  const baseUrl = `https://app.ecwid.com/api/v3/${storeId}`;
-  const url = `${baseUrl}${endpoint}`;
-  
-  const requestOptions = {
-    method: options.method || 'GET',
-    headers: {
-      'Authorization': `Bearer ${token}`,
-      'Content-Type': 'application/json',
-      ...options.headers
-    },
-    ...options
+function normalizzaProdotto(item) {
+  // Adatta questa funzione se la struttura MSY cambia
+  return {
+    sku: item.SKU,
+    name: item.name,
+    price: item.price,
+    images: item.images,
+    quantity: item.stock,
+    // ... altri campi necessari per Ecwid
   };
+}
 
+// ----- INTEGRAZIONE API ECWID (SIMPLE VERSION) -----
+async function syncProdottoToEcwid(prodotto) {
+  const apiBase = `https://app.ecwid.com/api/v3/${ECWID_STORE_ID}/products`;
+  const optionsAuth = { headers: { Authorization: `Bearer ${ECWID_SECRET_TOKEN}`, 'Content-Type': 'application/json' } };
+
+  // 1. Verifica se prodotto già presente
+  const sku = prodotto.sku;
   try {
-    const response = await fetch(url, requestOptions);
-    const data = await response.json();
-    
-    if (!response.ok) {
-      throw new Error(`Ecwid API error: ${response.status} - ${data.errorMessage || 'Unknown error'}`);
+    let found = false;
+
+    const checkResp = await fetch(`${apiBase}?sku=${encodeURIComponent(sku)}`, optionsAuth);
+    const checkData = await checkResp.json();
+
+    if (checkData && checkData.items && checkData.items.length > 0) {
+      found = true;
+      // Update via PUT/PATCH
+      const prodId = checkData.items[0].id;
+      console.log(`Aggiorno prodotto Ecwid id=${prodId}, SKU=${sku}`);
+      await fetch(`${apiBase}/${prodId}`, {
+        ...optionsAuth,
+        method: "PUT",
+        body: JSON.stringify(prodotto)
+      });
+    } else {
+      // Create via POST
+      console.log(`Creo nuovo prodotto Ecwid SKU=${sku}`);
+      await fetch(apiBase, {
+        ...optionsAuth,
+        method: "POST",
+        body: JSON.stringify(prodotto)
+      });
     }
-    
-    return data;
-  } catch (error) {
-    console.error('Critical error', error);
-    throw error;
+    return { success: true, sku };
+  } catch (err) {
+    console.error(`Errore sync prodotto SKU ${sku}:`, err);
+    return { success: false, sku, error: err.message || String(err) };
   }
 }
 
-// Get product by SKU from MSY
-app.get('/api/products/sku/:sku', async (req, res) => {
-  try {
-    const { sku } = req.params;
-    
-    if (!sku) {
-      return res.status(400).json({ error: 'SKU is required' });
-    }
-
-    const product = await fetchFromMSY(`/products/sku/${sku}`);
-    res.json(product);
-  } catch (error) {
-    console.error('Critical error', error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Preview sync - show what would be synced without actually syncing
-app.get('/sync/preview', async (req, res) => {
-  try {
-    // Fetch products from MSY
-    const msyProducts = await fetchFromMSY('/products');
-    
-    if (!msyProducts || !msyProducts.data) {
-      return res.status(404).json({ error: 'No products found in MSY' });
-    }
-
-    // Preview data
-    const preview = {
-      total_products: msyProducts.data.length,
-      products: msyProducts.data.map(product => ({
-        sku: product.sku,
-        name: product.name,
-        price: product.price,
-        stock: product.stock,
-        category: product.category
-      })),
-      timestamp: new Date().toISOString()
-    };
-
-    res.json(preview);
-  } catch (error) {
-    console.error('Critical error', error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Sync products from MSY to Ecwid
+// ----- ROUTE: SYNC MANUALE & LOGGING -----
 app.post('/sync/msy-to-ecwid', async (req, res) => {
   try {
-    // Fetch products from MSY
-    const msyProducts = await fetchFromMSY('/products');
-    
-    if (!msyProducts || !msyProducts.data) {
-      return res.status(404).json({ error: 'No products found in MSY' });
+    console.log('=== SYNC MSY → ECWID AVVIATA ===');
+    const listino = await fetchMSYListino();
+    const risultati = [];
+    for (const item of listino) {
+      const prodotto = normalizzaProdotto(item);
+      const esito = await syncProdottoToEcwid(prodotto);
+      risultati.push(esito);
     }
-
-    const syncResults = [];
-    
-    // Process each product
-    for (const msyProduct of msyProducts.data) {
-      try {
-        // Check if product exists in Ecwid
-        let ecwidProduct;
-        try {
-          const existingProducts = await fetchFromEcwid(`/products?sku=${msyProduct.sku}`);
-          ecwidProduct = existingProducts.items && existingProducts.items.length > 0 ? existingProducts.items[0] : null;
-        } catch (error) {
-          // Product doesn't exist, will create new one
-          ecwidProduct = null;
-        }
-
-        const productData = {
-          sku: msyProduct.sku,
-          name: msyProduct.name,
-          price: msyProduct.price,
-          description: msyProduct.description,
-          enabled: true,
-          quantity: msyProduct.stock || 0,
-          categories: msyProduct.category ? [{ id: msyProduct.category }] : []
-        };
-
-        let result;
-        if (ecwidProduct) {
-          // Update existing product
-          result = await fetchFromEcwid(`/products/${ecwidProduct.id}`, {
-            method: 'PUT',
-            body: JSON.stringify(productData)
-          });
-          syncResults.push({
-            sku: msyProduct.sku,
-            action: 'updated',
-            success: true,
-            ecwid_id: ecwidProduct.id
-          });
-        } else {
-          // Create new product
-          result = await fetchFromEcwid('/products', {
-            method: 'POST',
-            body: JSON.stringify(productData)
-          });
-          syncResults.push({
-            sku: msyProduct.sku,
-            action: 'created',
-            success: true,
-            ecwid_id: result.id
-          });
-        }
-      } catch (productError) {
-        console.error('Critical error', productError);
-        syncResults.push({
-          sku: msyProduct.sku,
-          action: 'error',
-          success: false,
-          error: productError.message
-        });
-      }
-    }
-    
-    const successCount = syncResults.filter(r => r.success).length;
-    const errorCount = syncResults.filter(r => !r.success).length;
-    
-    res.json({
-      message: 'Sync completed',
-      total_products: msyProducts.data.length,
-      successful_syncs: successCount,
-      failed_syncs: errorCount,
-      results: syncResults,
-      timestamp: new Date().toISOString()
-    });
+    console.log('=== SYNC COMPLETATA ===', risultati.length, 'prodotti sincronizzati');
+    res.json({ success: true, risultati });
   } catch (error) {
-    console.error('Critical error', error);
-    res.status(500).json({ error: error.message });
+    console.error('Errore in /sync/msy-to-ecwid:', error);
+    res.status(500).json({ error: error.message || 'Errore generico nella sync' });
   }
 });
 
-// Error handling middleware
+// ----- ROUTE DI TEST, HEALTH, DIAGNOSTICA -----
+app.get('/health', (req, res) => res.json({ status: 'OK', now: new Date() }));
+
+app.get('/api/products/sku/:sku', async (req, res) => {
+  try {
+    const sku = req.params.sku;
+    console.log('Verifica presenza prodotto Ecwid SKU:', sku);
+    const apiBase = `https://app.ecwid.com/api/v3/${ECWID_STORE_ID}/products`;
+    const optionsAuth = { headers: { Authorization: `Bearer ${ECWID_SECRET_TOKEN}` } };
+    const checkResp = await fetch(`${apiBase}?sku=${encodeURIComponent(sku)}`, optionsAuth);
+    const checkData = await checkResp.json();
+    res.json(checkData);
+  } catch (err) {
+    console.error('Errore in /api/products/sku/:sku:', err);
+    res.status(500).json({ error: err.message || 'Errore generico' });
+  }
+});
+
+// ----- CATCH GLOBALE -----
 app.use((err, req, res, next) => {
-  console.error('Critical error', err);
-  res.status(500).json({ error: 'Something went wrong!' });
+  console.error('CATCH GLOBALE:', err);
+  res.status(500).json({ error: 'Errore server', detail: err.message });
 });
 
-// 404 handler
-app.use((req, res) => {
-  res.status(404).json({ error: 'Endpoint not found' });
-});
+// ----- AVVIO SERVER -----
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () =>
+  console.log(`Server MSY→Ecwid pronto su http://localhost:${PORT}`)
+);
 
-// Start server
-app.listen(PORT, () => {
-  console.log(`Server is running on port ${PORT}`);
-  console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
-  
-  // Verify environment variables
-  const requiredEnvVars = ['ECWID_STORE_ID', 'ECWID_SECRET_TOKEN'];
-  const missingVars = requiredEnvVars.filter(varName => !process.env[varName]);
-  
-  if (missingVars.length > 0) {
-    console.warn('Warning: Missing environment variables:', missingVars.join(', '));
-  } else {
-    console.log('All required environment variables are set');
+// ----- (OPZIONALE) SCHEDULER AUTOMATICO -----
+/*
+setInterval(async () => {
+  try {
+    await fetch('http://localhost:' + PORT + '/sync/msy-to-ecwid', { method: 'POST' });
+    console.log('Ciclo automatico sync avviato.');
+  } catch (e) {
+    console.error('Errore scheduler:', e);
   }
-  
-  // MSY_API_KEY is now optional for public endpoints
-  if (!process.env.MSY_API_KEY || process.env.MSY_API_KEY.trim() === '') {
-    console.log('MSY_API_KEY not set - will work for public endpoints only');
-  } else {
-    console.log('MSY_API_KEY is configured');
-  }
+}, 1000 * 60 * 60); // ogni ora
+*/
+
 });
