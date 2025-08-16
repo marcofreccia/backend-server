@@ -160,5 +160,3 @@ setInterval(async () => {
   }
 }, 1000 * 60 * 60); // ogni ora
 */
-
-});
