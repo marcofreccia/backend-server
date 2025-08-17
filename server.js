@@ -1,9 +1,9 @@
 // ----- GLOBAL ERROR HANDLING -----
 process.on('unhandledRejection', (reason, p) => {
-  console.error('Unhandled Rejection at:', p, 'reason:', reason);
+  console.error('[SYNC][GLOBAL] Unhandled Rejection at:', p, 'reason:', reason);
 });
-process.on('uncaughtException', (err) => {
-  console.error('Uncaught Exception thrown:', err);
+process.on('uncaughtException', err => {
+  console.error('[SYNC][GLOBAL] Uncaught Exception thrown:', err);
 });
 
 // ----- IMPORT & CONFIG -----
@@ -13,71 +13,34 @@ const fetch = require('node-fetch');
 const app = express();
 app.use(express.json());
 
-// ----- MIDDLEWARE LOGGING GLOBALE -----
-app.use((req, res, next) => {
-  console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
-  next();
-});
-
-// ----- CHECK VARIABILI AMBIENTE -----
-const { ECWID_STORE_ID, ECWID_SECRET_TOKEN } = process.env;
-if (!ECWID_STORE_ID || !ECWID_SECRET_TOKEN) {
-  throw new Error('Missing Ecwid environment variables');
+// ----- SLEEP/WAIT FUNCTION -----
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-// ----- FUNZIONE FETCH + PARSING MSY CON CONTROLLI ROBUSTI -----
+// ----- MSY LISTINO FETCH + LOG ROBUSTO -----
 async function fetchMSYListino() {
   try {
+    const start = Date.now();
     console.log('[MSY FETCH] Inizio fetch listino MSY');
     const response = await fetch('https://msy.madtec.be/price_list/pricelist_en.json');
-    
-    if (!response.ok) {
-      throw new Error(`Errore fetch listino MSY - Status: ${response.status} ${response.statusText}`);
-    }
-    
+    if (!response.ok) throw new Error(`[MSY FETCH] Errore fetch listino MSY - Status: ${response.status} ${response.statusText}`);
     const data = await response.json();
-    console.log('[MSY FETCH] Risposta ricevuta, tipo:', typeof data, 'keys:', Object.keys(data || {}));
-    
-    // Controlli robusti per validare la struttura
-    if (!data) {
-      throw new Error('Risposta MSY vuota o null');
+    console.log(`[MSY FETCH] Download listino completato in ${(Date.now() - start) / 1000}s`);
+
+    if (!data || !Array.isArray(data.price_list)) {
+      console.error("[MSY FETCH] Errore: risposta JSON non contiene 'price_list' valido", data);
+      throw new Error("[MSY FETCH] Formato listino non valido");
     }
-    
-    if (typeof data !== 'object') {
-      throw new Error(`Tipo di dato inaspettato: ${typeof data}, previsto object`);
-    }
-    
-    // Verifica presenza di price_list
-    if (!data.price_list) {
-      console.log('[MSY FETCH] Campo price_list non trovato. Campi disponibili:', Object.keys(data));
-      throw new Error('Campo price_list non trovato nella risposta MSY');
-    }
-    
-    if (!Array.isArray(data.price_list)) {
-      throw new Error(`price_list non è un array: ${typeof data.price_list}`);
-    }
-    
-    const listino = data.price_list;
-    console.log('[MSY FETCH] Listino MSY scaricato e validato:', listino.length, 'prodotti');
-    
-    // Log di debug per i primi elementi
-    if (listino.length > 0) {
-      console.log('[MSY FETCH] Esempio primo prodotto:', JSON.stringify(listino[0], null, 2));
-      if (listino.length > 1) {
-        console.log('[MSY FETCH] Esempio secondo prodotto:', JSON.stringify(listino[1], null, 2));
-      }
-    } else {
-      console.warn('[MSY FETCH] ATTENZIONE: Listino vuoto!');
-    }
-    
-    return listino;
+    console.log(`[MSY FETCH] Listino MSY scaricato e validato: ${data.price_list.length} prodotti`);
+    return data.price_list;
   } catch (error) {
     console.error('[MSY FETCH] Errore fetchMSYListino:', error.message);
-    console.error('[MSY FETCH] Stack trace:', error.stack);
     throw error;
   }
 }
 
+// ----- FUNZIONE PER NORMALIZZARE IL PRODOTTO -----
 function normalizzaProdotto(item) {
   return {
     sku: item.SKU,
@@ -89,122 +52,138 @@ function normalizzaProdotto(item) {
   };
 }
 
-// ----- INTEGRAZIONE API ECWID -----
+// ----- INTEGRAZIONE API ECWID CON RATE LIMIT HANDLING -----
 async function syncProdottoToEcwid(prodotto) {
-  const apiBase = `https://app.ecwid.com/api/v3/${ECWID_STORE_ID}/products`;
-  const optionsAuth = { headers: { Authorization: `Bearer ${ECWID_SECRET_TOKEN}`, 'Content-Type': 'application/json' } };
-  const sku = prodotto.sku;
-  
-  try {
-    const checkResp = await fetch(`${apiBase}?sku=${encodeURIComponent(sku)}`, optionsAuth);
-    const checkData = await checkResp.json();
-    
-    if (checkData && checkData.items && checkData.items.length > 0) {
-      // Update via PUT/PATCH
-      const prodId = checkData.items[0].id;
-      console.log(`[ECWID SYNC] Aggiorno prodotto id=${prodId}, SKU=${sku}`);
-      await fetch(`${apiBase}/${prodId}`, {
-        ...optionsAuth,
-        method: "PUT",
-        body: JSON.stringify(prodotto)
-      });
-    } else {
-      // Create via POST
-      console.log(`[ECWID SYNC] Creo nuovo prodotto SKU=${sku}`);
-      await fetch(apiBase, {
-        ...optionsAuth,
-        method: "POST",
-        body: JSON.stringify(prodotto)
-      });
+  const apiBase = `https://app.ecwid.com/api/v3/${process.env.ECWID_STORE_ID}/products`;
+  const optionsAuth = {
+    headers: {
+      Authorization: `Bearer ${process.env.ECWID_SECRET_TOKEN}`,
+      'Content-Type': 'application/json',
     }
-    
-    return { success: true, sku };
-  } catch (err) {
-    console.error(`[ECWID SYNC] Errore sync prodotto SKU ${sku}:`, err);
-    return { success: false, sku, error: err.message || String(err) };
-  }
-}
+  };
+  const sku = prodotto.sku;
 
-// ----- ROUTE: SYNC MANUALE & LOGGING -----
-app.post('/sync/msy-to-ecwid', async (req, res) => {
-  try {
-    console.log('[SYNC] = SYNC MSY → ECWID AVVIATA =');
-    const listino = await fetchMSYListino();
-    
-    console.log(`[SYNC] Inizio iterazione su ${listino.length} prodotti`);
-    const risultati = [];
-    
-    // Iterazione robusta con controlli su ogni elemento
-    for (let i = 0; i < listino.length; i++) {
-      const item = listino[i];
-      
-      if (!item) {
-        console.warn(`[SYNC] Prodotto ${i} è null/undefined, skip`);
+  let retries = 0;
+  const maxRetries = 5;
+  while (retries <= maxRetries) {
+    try {
+      const checkResp = await fetch(`${apiBase}?sku=${encodeURIComponent(sku)}`, optionsAuth);
+      const checkData = await checkResp.json();
+
+      if (checkData && checkData.items && checkData.items.length > 0) {
+        const prodId = checkData.items[0].id;
+        console.log(`[ECWID SYNC] Aggiorno prodotto id=${prodId}, SKU=${sku}`);
+        await fetch(`${apiBase}/${prodId}`, {
+          ...optionsAuth,
+          method: "PUT",
+          body: JSON.stringify(prodotto)
+        });
+      } else {
+        console.log(`[ECWID SYNC] Creo nuovo prodotto SKU=${sku}`);
+        await fetch(apiBase, {
+          ...optionsAuth,
+          method: "POST",
+          body: JSON.stringify(prodotto)
+        });
+      }
+      return { success: true, sku };
+    } catch (err) {
+      // Rate limit o errore di rete
+      if (err.message && err.message.includes('429')) {
+        const pause = Math.min(30000, 2000 * Math.pow(2, retries));
+        console.warn(`[SYNC][RATE LIMIT] Errore 429, retry n°${retries+1}, pausa ${pause/1000}s`);
+        await sleep(pause);
+        retries++;
         continue;
       }
-      
+      console.error(`[ECWID SYNC] Errore sync prodotto SKU ${sku}:`, err);
+      return { success: false, sku, error: err.message || String(err) };
+    }
+  }
+  return { success: false, sku, error: "[SYNC] Numero massimo di retry Ecwid raggiunto" };
+}
+
+// ----- BATCH PROCESSING + LOGGING AVANZATO -----
+async function processBatch(listino) {
+  const BATCH = 50;
+  let total = listino.length;
+  let count = 0;
+  const risultati = [];
+  for (let i = 0; i < total; i += BATCH) {
+    const batch = listino.slice(i, i + BATCH);
+
+    for (let j = 0; j < batch.length; j++) {
+      const item = batch[j];
+      if (!item) continue;
       try {
         const prodotto = normalizzaProdotto(item);
         const esito = await syncProdottoToEcwid(prodotto);
         risultati.push(esito);
-        
-        if ((i + 1) % 10 === 0) {
-          console.log(`[SYNC] Processati ${i + 1}/${listino.length} prodotti`);
-        }
-      } catch (itemError) {
-        console.error(`[SYNC] Errore processando prodotto ${i}:`, itemError);
-        risultati.push({ success: false, index: i, error: itemError.message });
+      } catch (e) {
+        console.error(`[SYNC] Errore su prodotto #${i + j}:`, e);
+        risultati.push({ success: false, index: i + j, error: e.message });
+      }
+      count++;
+      if (count % 10 === 0) {
+        console.log(`[SYNC] Processati ${count}/${total} prodotti`);
       }
     }
-    
-    const successCount = risultati.filter(r => r.success).length;
-    const errorCount = risultati.filter(r => !r.success).length;
-    
-    console.log(`[SYNC] = SYNC COMPLETATA = Total: ${risultati.length}, Success: ${successCount}, Errors: ${errorCount}`);
-    res.json({ success: true, total: risultati.length, successCount, errorCount, risultati });
-    
+    console.log(`[SYNC] Batch da ${i + 1} a ${Math.min(i + BATCH, total)} processato`);
+  }
+  return risultati;
+}
+
+// ----- TIMEOUT WRAPPER -----
+async function syncMSYWithTimeout(listino, processBatch) {
+  const TIMEOUT_MS = 10 * 60 * 1000; // 10 minuti
+  let completed = false;
+  return Promise.race([
+    (async () => {
+      try {
+        const risultati = await processBatch(listino);
+        completed = true;
+        return risultati;
+      } catch (e) {
+        completed = true;
+        throw e;
+      }
+    })(),
+    sleep(TIMEOUT_MS).then(() => {
+      if (!completed) {
+        throw new Error('[SYNC] TIMEOUT RAGGIUNTO');
+      }
+    })
+  ]);
+}
+
+// ----- ROUTE: SYNC MANUALE + LOGGING -----
+app.post('/sync/msy-to-ecwid', async (req, res) => {
+  const start = Date.now();
+  try {
+    const listino = await fetchMSYListino();
+    const risultati = await syncMSYWithTimeout(listino, processBatch);
+    console.log(`[SYNC] COMPLETATA! Processati ${risultati.length} prodotti in ${(Date.now() - start) / 1000}s`);
+    res.json({ success: true, total: risultati.length, risultati });
   } catch (error) {
-    console.error('[SYNC] Errore in /sync/msy-to-ecwid:', error);
-    res.status(500).json({ error: error.message || 'Errore generico nella sync' });
+    console.error('[SYNC] Errore generale nella routine:', error);
+    res.status(500).json({ error: error.message });
   }
 });
 
-// ----- ROUTE DI TEST, HEALTH, DIAGNOSTICA -----
+// ----- ALTRE ROUTE E AVVIO SERVER -----
 app.get('/health', (req, res) => res.json({ status: 'OK', now: new Date() }));
 
-app.get('/api/products/sku/:sku', async (req, res) => {
-  try {
-    const sku = req.params.sku;
-    console.log('Verifica presenza prodotto Ecwid SKU:', sku);
-    const apiBase = `https://app.ecwid.com/api/v3/${ECWID_STORE_ID}/products`;
-    const optionsAuth = { headers: { Authorization: `Bearer ${ECWID_SECRET_TOKEN}` } };
-    const checkResp = await fetch(`${apiBase}?sku=${encodeURIComponent(sku)}`, optionsAuth);
-    const checkData = await checkResp.json();
-    res.json(checkData);
-  } catch (err) {
-    console.error('Errore in /api/products/sku/:sku:', err);
-    res.status(500).json({ error: err.message || 'Errore generico' });
-  }
-});
-
-// ----- CATCH GLOBALE -----
-app.use((err, req, res, next) => {
-  console.error('CATCH GLOBALE:', err);
-  res.status(500).json({ error: 'Errore server', detail: err.message });
-});
-
-// ----- AVVIO SERVER -----
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () =>
   console.log(`Server MSY→Ecwid pronto su http://localhost:${PORT}`)
 );
 
-// ----- SCHEDULER AUTOMATICO ATTIVO -----
+// ----- AVVIO SCHEDULER AUTOMATICO (OGNI ORA O CRON) -----
 setInterval(async () => {
   try {
-    await fetch('http://localhost:' + PORT + '/sync/msy-to-ecwid', { method: 'POST' });
-    console.log('Ciclo automatico sync avviato.');
+    await fetch(`http://localhost:${PORT}/sync/msy-to-ecwid`, { method: 'POST' });
+    console.log('[SYNC][SCHEDULER] Ciclo automatico sync avviato.');
   } catch (e) {
-    console.error('Errore scheduler:', e);
+    console.error('[SYNC][SCHEDULER] Errore scheduler:', e);
   }
 }, 1000 * 60 * 60); // ogni ora
