@@ -5,26 +5,22 @@ process.on('unhandledRejection', (reason, p) => {
 process.on('uncaughtException', (err) => {
   console.error('Uncaught Exception thrown:', err);
 });
-
 // ----- IMPORT & CONFIG -----
 require('dotenv').config();
 const express = require('express');
 const fetch = require('node-fetch');
 const app = express();
 app.use(express.json());
-
 // ----- MIDDLEWARE LOGGING GLOBALE -----
 app.use((req, res, next) => {
   console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
   next();
 });
-
 // ----- CHECK VARIABILI AMBIENTE -----
 const { ECWID_STORE_ID, ECWID_SECRET_TOKEN } = process.env;
 if (!ECWID_STORE_ID || !ECWID_SECRET_TOKEN) {
   throw new Error('Missing Ecwid environment variables');
 }
-
 // ----- FUNZIONE FETCH + PARSING MSY -----
 async function fetchMSYListino() {
   try {
@@ -39,7 +35,6 @@ async function fetchMSYListino() {
     throw error;
   }
 }
-
 function normalizzaProdotto(item) {
   return {
     sku: item.SKU,
@@ -50,7 +45,6 @@ function normalizzaProdotto(item) {
     // ... altri campi necessari per Ecwid
   };
 }
-
 // ----- INTEGRAZIONE API ECWID -----
 async function syncProdottoToEcwid(prodotto) {
   const apiBase = `https://app.ecwid.com/api/v3/${ECWID_STORE_ID}/products`;
@@ -83,7 +77,6 @@ async function syncProdottoToEcwid(prodotto) {
     return { success: false, sku, error: err.message || String(err) };
   }
 }
-
 // ----- ROUTE: SYNC MANUALE & LOGGING -----
 app.post('/sync/msy-to-ecwid', async (req, res) => {
   try {
@@ -102,10 +95,8 @@ app.post('/sync/msy-to-ecwid', async (req, res) => {
     res.status(500).json({ error: error.message || 'Errore generico nella sync' });
   }
 });
-
 // ----- ROUTE DI TEST, HEALTH, DIAGNOSTICA -----
 app.get('/health', (req, res) => res.json({ status: 'OK', now: new Date() }));
-
 app.get('/api/products/sku/:sku', async (req, res) => {
   try {
     const sku = req.params.sku;
@@ -120,19 +111,16 @@ app.get('/api/products/sku/:sku', async (req, res) => {
     res.status(500).json({ error: err.message || 'Errore generico' });
   }
 });
-
 // ----- CATCH GLOBALE -----
 app.use((err, req, res, next) => {
   console.error('CATCH GLOBALE:', err);
   res.status(500).json({ error: 'Errore server', detail: err.message });
 });
-
 // ----- AVVIO SERVER -----
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () =>
   console.log(`Server MSY→Ecwid pronto su http://localhost:${PORT}`)
 );
-
 // ----- (OPZIONALE) SCHEDULER AUTOMATICO -----
 /*
 setInterval(async () => {
