@@ -20,8 +20,6 @@ app.use((req, res, next) => {
   next();
 });
 
-// ===== SYNC MSY <-> ECWID LOGIC COMPLETA =====
-
 // Variabili d'ambiente (configurale in .env)
 const ECWID_STORE_ID = process.env.ECWID_STORE_ID;
 const ECWID_TOKEN = process.env.ECWID_SECRET_TOKEN;
@@ -43,84 +41,81 @@ const log = (...args) => console.log(new Date().toISOString(), ...args);
 
 // Funzione principale di sync
 async function syncMSYtoEcwid() {
-  try {
-    log('Inizio sync MSY-Ecwid...');
-    // 1. Scarica e valida listino
-    const listinoResp = await fetch(MSY_URL);
-    if (!listinoResp.ok) throw new Error(`MSY download HTTP ${listinoResp.status}`);
-    const listino = await listinoResp.json();
-    if (!listino || !Array.isArray(listino.price_list)) throw new Error('price_list non valido!');
-    log(`Listino MSY scaricato: ${listino.price_list.length} prodotti`);
+  log('Inizio sync MSY-Ecwid...');
+  // 1. Scarica e valida listino
+  const listinoResp = await fetch(MSY_URL);
+  if (!listinoResp.ok) throw new Error(`MSY download HTTP ${listinoResp.status}`);
+  const listino = await listinoResp.json();
+  if (!listino || !Array.isArray(listino.price_list)) throw new Error('price_list non valido!');
+  log(`Listino MSY scaricato: ${listino.price_list.length} prodotti`);
 
-    let countCreated = 0, countUpdated = 0, countIgnored = 0, countError = 0;
+  let countCreated = 0, countUpdated = 0, countIgnored = 0, countError = 0;
 
-    // 2. Ciclo prodotti
-    for (const [i, prodotto] of listino.price_list.entries()) {
-      const sku = prodotto.article_num && String(prodotto.article_num).trim();
-      if (!sku) {
-        countIgnored++;
-        log(`[${i}] Nessun SKU, prodotto ignorato`, prodotto.name || prodotto);
-        continue;
-      }
-      // 2a. Cerca SKU in Ecwid
-      let found = null;
-      try {
-        const searchRes = await ecwidFetch(`products?sku=${encodeURIComponent(sku)}`);
-        found = searchRes && Array.isArray(searchRes.items) && searchRes.items[0];
-      } catch (err) {
-        countError++;
-        log(`[${i}] Errore Ecwid search SKU ${sku}:`, err);
-        continue;
-      }
-      // 2b. Prepara struttura prodotto Ecwid
-      const ecwidProd = {
-        sku,
-        name: prodotto.name || sku,
-        price: Number(prodotto.price) || 0,
-        quantity: prodotto.stock != null ? Number(prodotto.stock) : 0,
-        // Puoi aggiungere immagini, descrizioni, attributi qui se richiesto
-      };
-      try {
-        if (found) {
-          // UPDATE prodotto
-          await ecwidFetch(`products/${found.id}`, {
-            method: 'PUT',
-            body: JSON.stringify(ecwidProd),
-          });
-          countUpdated++;
-          log(`[${i}] ${sku}: Aggiornato Ecwid (${found.id})`);
-        } else {
-          // CREA nuovo prodotto
-          await ecwidFetch(`products`, {
-            method: 'POST',
-            body: JSON.stringify(ecwidProd),
-          });
-          countCreated++;
-          log(`[${i}] ${sku}: Creato su Ecwid`);
-        }
-      } catch (err) {
-        countError++;
-        log(`[${i}] ERRORE Ecwid upsert SKU ${sku}:`, err.message || err);
-      }
-      if (i % 10 === 0) log(`Progresso: ${i}/${listino.price_list.length}`);
+  // 2. Ciclo prodotti
+  for (const [i, prodotto] of listino.price_list.entries()) {
+    const sku = prodotto.article_num && String(prodotto.article_num).trim();
+    if (!sku) {
+      countIgnored++;
+      log(`[${i}] Nessun SKU, prodotto ignorato`, prodotto.name || prodotto);
+      continue;
     }
-    log(`Sync COMPLETA Ecwid: ${countCreated} creati, ${countUpdated} aggiornati, ${countIgnored} ignorati, ${countError} errori`);
-    return { created: countCreated, updated: countUpdated, ignored: countIgnored, error: countError };
-  } catch (err) {
-    log('SYNC FAILED:', err.message || err);
-    throw err;
+    // 2a. Cerca SKU in Ecwid
+    let found = null;
+    try {
+      const searchRes = await ecwidFetch(`products?sku=${encodeURIComponent(sku)}`);
+      found = searchRes && Array.isArray(searchRes.items) && searchRes.items[0];
+    } catch (err) {
+      countError++;
+      log(`[${i}] Errore Ecwid search SKU ${sku}:`, err);
+      continue;
+    }
+    // 2b. Prepara struttura prodotto Ecwid
+    const ecwidProd = {
+      sku,
+      name: prodotto.name || sku,
+      price: Number(prodotto.price) || 0,
+      quantity: prodotto.stock != null ? Number(prodotto.stock) : 0,
+      // Puoi aggiungere immagini, descrizioni, attributi qui se richiesto
+    };
+    try {
+      if (found) {
+        // UPDATE prodotto
+        await ecwidFetch(`products/${found.id}`, {
+          method: 'PUT',
+          body: JSON.stringify(ecwidProd),
+        });
+        countUpdated++;
+        log(`[${i}] ${sku}: Aggiornato Ecwid (${found.id})`);
+      } else {
+        // CREA nuovo prodotto
+        await ecwidFetch(`products`, {
+          method: 'POST',
+          body: JSON.stringify(ecwidProd),
+        });
+        countCreated++;
+        log(`[${i}] ${sku}: Creato su Ecwid`);
+      }
+    } catch (err) {
+      countError++;
+      log(`[${i}] ERRORE Ecwid upsert SKU ${sku}:`, err.message || err);
+    }
+    if (i % 10 === 0) log(`Progresso: ${i}/${listino.price_list.length}`);
   }
+  log(`Sync COMPLETA Ecwid: ${countCreated} creati, ${countUpdated} aggiornati, ${countIgnored} ignorati, ${countError} errori`);
+  return { created: countCreated, updated: countUpdated, ignored: countIgnored, error: countError };
 }
 
-// ----- ROUTE DI TEST (opzionale, decommenta per attivare API sync manuale) -----
-// app.post('/sync/msy-to-ecwid', async (req, res) => {
-//   try {
-//     const risultato = await syncMSYtoEcwid();
-//     res.status(200).json({ success: true, ...risultato });
-//   } catch (err) {
-//     res.status(500).json({ success: false, error: err.message });
-//   }
-// });
+// ===== ROUTE SICURA PER SYNC =====
+app.post('/v1/ecwid-sync', async (req, res) => {
+  try {
+    const risultato = await syncMSYtoEcwid();
+    res.status(200).json({ success: true, ...risultato });
+  } catch (err) {
+    // Logging error sul server e ritorno JSON di errore
+    log('Errore in /v1/ecwid-sync:', err.message || err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
 
 // ----- AVVIO SERVER -----
 const PORT = process.env.PORT || 3000;
