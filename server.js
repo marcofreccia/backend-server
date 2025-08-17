@@ -121,8 +121,7 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () =>
   console.log(`Server MSY→Ecwid pronto su http://localhost:${PORT}`)
 );
-// ----- (OPZIONALE) SCHEDULER AUTOMATICO -----
-/*
+// ----- SCHEDULER AUTOMATICO ATTIVO -----
 setInterval(async () => {
   try {
     await fetch('http://localhost:' + PORT + '/sync/msy-to-ecwid', { method: 'POST' });
@@ -131,4 +130,3 @@ setInterval(async () => {
     console.error('Errore scheduler:', e);
   }
 }, 1000 * 60 * 60); // ogni ora
-*/
