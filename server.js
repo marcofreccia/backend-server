@@ -27,7 +27,6 @@ async function fetchMSYListino() {
     if (!response.ok) throw new Error(`[MSY FETCH] Errore fetch listino MSY - Status: ${response.status} ${response.statusText}`);
     const data = await response.json();
     console.log(`[MSY FETCH] Download listino completato in ${(Date.now() - start) / 1000}s`);
-
     if (!data || !Array.isArray(data.price_list)) {
       console.error("[MSY FETCH] Errore: risposta JSON non contiene 'price_list' valido", data);
       throw new Error("[MSY FETCH] Formato listino non valido");
@@ -62,14 +61,12 @@ async function syncProdottoToEcwid(prodotto) {
     }
   };
   const sku = prodotto.sku;
-
   let retries = 0;
   const maxRetries = 5;
   while (retries <= maxRetries) {
     try {
       const checkResp = await fetch(`${apiBase}?sku=${encodeURIComponent(sku)}`, optionsAuth);
       const checkData = await checkResp.json();
-
       if (checkData && checkData.items && checkData.items.length > 0) {
         const prodId = checkData.items[0].id;
         console.log(`[ECWID SYNC] Aggiorno prodotto id=${prodId}, SKU=${sku}`);
@@ -111,7 +108,6 @@ async function processBatch(listino) {
   const risultati = [];
   for (let i = 0; i < total; i += BATCH) {
     const batch = listino.slice(i, i + BATCH);
-
     for (let j = 0; j < batch.length; j++) {
       const item = batch[j];
       if (!item) continue;
