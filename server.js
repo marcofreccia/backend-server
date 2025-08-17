@@ -9,7 +9,8 @@ process.on('uncaughtException', (err) => {
 // ----- IMPORT & CONFIG -----
 require('dotenv').config();
 const express = require('express');
-const fetch = require('node-fetch'); // o usa import se usi ESM
+const fetch = require('node-fetch'); // usa import('node-fetch') se ESM
+
 const app = express();
 app.use(express.json());
 
@@ -21,12 +22,12 @@ app.use((req, res, next) => {
 
 // ===== SYNC MSY <-> ECWID LOGIC COMPLETA =====
 
-// Imposta qui le tue variabili o meglio via .env
+// Variabili d'ambiente (configurale in .env)
 const ECWID_STORE_ID = process.env.ECWID_STORE_ID;
 const ECWID_TOKEN = process.env.ECWID_SECRET_TOKEN;
 const MSY_URL = 'https://msy.madtec.be/price_list/pricelist_en.json';
 
-// Helper per Ecwid API
+// Helper per chiamate Ecwid API
 const ecwidFetch = (endpoint, options = {}) =>
   fetch(`https://app.ecwid.com/api/v3/${ECWID_STORE_ID}/${endpoint}`, {
     ...options,
@@ -40,7 +41,7 @@ const ecwidFetch = (endpoint, options = {}) =>
 // Log robusto
 const log = (...args) => console.log(new Date().toISOString(), ...args);
 
-// Main sync function
+// Funzione principale di sync
 async function syncMSYtoEcwid() {
   try {
     log('Inizio sync MSY-Ecwid...');
@@ -52,6 +53,7 @@ async function syncMSYtoEcwid() {
     log(`Listino MSY scaricato: ${listino.price_list.length} prodotti`);
 
     let countCreated = 0, countUpdated = 0, countIgnored = 0, countError = 0;
+
     // 2. Ciclo prodotti
     for (const [i, prodotto] of listino.price_list.entries()) {
       const sku = prodotto.article_num && String(prodotto.article_num).trim();
@@ -76,7 +78,7 @@ async function syncMSYtoEcwid() {
         name: prodotto.name || sku,
         price: Number(prodotto.price) || 0,
         quantity: prodotto.stock != null ? Number(prodotto.stock) : 0,
-        // Inserisci mappatura immagini/descriptions se serve...
+        // Puoi aggiungere immagini, descrizioni, attributi qui se richiesto
       };
       try {
         if (found) {
@@ -102,7 +104,6 @@ async function syncMSYtoEcwid() {
       }
       if (i % 10 === 0) log(`Progresso: ${i}/${listino.price_list.length}`);
     }
-
     log(`Sync COMPLETA Ecwid: ${countCreated} creati, ${countUpdated} aggiornati, ${countIgnored} ignorati, ${countError} errori`);
     return { created: countCreated, updated: countUpdated, ignored: countIgnored, error: countError };
   } catch (err) {
