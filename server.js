@@ -1,7 +1,3 @@
-Ecco il codice finale pronto da copiare e incollare nel tuo server.js.
-Ho integrato il blocco per la sync MSY-Ecwid nel flusso e ti aggiungo anche (commentata) una route Express che puoi attivare per lanciarla da API.
-
-js
 // ----- GLOBAL ERROR HANDLING -----
 process.on('unhandledRejection', (reason, p) => {
   console.error('Unhandled Rejection at:', p, 'reason:', reason);
