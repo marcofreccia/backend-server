@@ -10,7 +10,6 @@ process.on('uncaughtException', (err) => {
 require('dotenv').config();
 const express = require('express');
 const fetch = require('node-fetch'); // usa import('node-fetch') se ESM
-
 const app = express();
 app.use(express.json());
 
@@ -48,9 +47,7 @@ async function syncMSYtoEcwid() {
   const listino = await listinoResp.json();
   if (!listino || !Array.isArray(listino.price_list)) throw new Error('price_list non valido!');
   log(`Listino MSY scaricato: ${listino.price_list.length} prodotti`);
-
   let countCreated = 0, countUpdated = 0, countIgnored = 0, countError = 0;
-
   // 2. Ciclo prodotti
   for (const [i, prodotto] of listino.price_list.entries()) {
     const sku = prodotto.article_num && String(prodotto.article_num).trim();
@@ -105,7 +102,7 @@ async function syncMSYtoEcwid() {
   return { created: countCreated, updated: countUpdated, ignored: countIgnored, error: countError };
 }
 
-// ===== ROUTE SICURA PER SYNC =====
+// = ROUTE SICURA PER SYNC =
 app.post('/v1/ecwid-sync', async (req, res) => {
   try {
     const risultato = await syncMSYtoEcwid();
