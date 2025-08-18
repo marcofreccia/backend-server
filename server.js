@@ -9,7 +9,7 @@ process.on('uncaughtException', (err) => {
 // ----- IMPORT & CONFIG -----
 require('dotenv').config();
 const express = require('express');
-const fetch = require('node-fetch'); // usa import('node-fetch') se ESM
+const fetch = require('node-fetch');
 const app = express();
 app.use(express.json());
 
@@ -38,68 +38,74 @@ const ecwidFetch = (endpoint, options = {}) =>
 // Log robusto
 const log = (...args) => console.log(new Date().toISOString(), ...args);
 
-// Funzione principale di sync
-async function syncMSYtoEcwid() {
-  log('Inizio sync MSY-Ecwid...');
-  // 1. Scarica e valida listino
-  const listinoResp = await fetch(MSY_URL);
-  if (!listinoResp.ok) throw new Error(`MSY download HTTP ${listinoResp.status}`);
-  const listino = await listinoResp.json();
-  if (!listino || !Array.isArray(listino.price_list)) throw new Error('price_list non valido!');
-  log(`Listino MSY scaricato: ${listino.price_list.length} prodotti`);
-  let countCreated = 0, countUpdated = 0, countIgnored = 0, countError = 0;
-  // 2. Ciclo prodotti
-  for (const [i, prodotto] of listino.price_list.entries()) {
-    const sku = prodotto.article_num && String(prodotto.article_num).trim();
-    if (!sku) {
-      countIgnored++;
-      log(`[${i}] Nessun SKU, prodotto ignorato`, prodotto.name || prodotto);
-      continue;
-    }
-    // 2a. Cerca SKU in Ecwid
+// Funzione di sync e gestione prodotti (con batch paralleli)
+async function processProduct(prodotto, i) {
+  try {
+    // Se manca uno SKU, genera uno fittizio unico
+    const sku = prodotto.article_num && String(prodotto.article_num).trim()
+      ? String(prodotto.article_num).trim()
+      : `NO-SKU-${i}`;
+    // Cerca per SKU (anche virtuale)
     let found = null;
     try {
       const searchRes = await ecwidFetch(`products?sku=${encodeURIComponent(sku)}`);
       found = searchRes && Array.isArray(searchRes.items) && searchRes.items[0];
     } catch (err) {
-      countError++;
-      log(`[${i}] Errore Ecwid search SKU ${sku}:`, err);
-      continue;
+      log(`[${i}] Errore ricerca Ecwid SKU ${sku}:`, err);
     }
-    // 2b. Prepara struttura prodotto Ecwid
+    // Mappa dati da MSY verso Ecwid
     const ecwidProd = {
       sku,
       name: prodotto.name || sku,
       price: Number(prodotto.price) || 0,
       quantity: prodotto.stock != null ? Number(prodotto.stock) : 0,
-      // Puoi aggiungere immagini, descrizioni, attributi qui se richiesto
+      // Puoi aggiungere altre proprietà Ecwid qui, esempio immagini/descriptions
     };
-    try {
-      if (found) {
-        // UPDATE prodotto
-        await ecwidFetch(`products/${found.id}`, {
-          method: 'PUT',
-          body: JSON.stringify(ecwidProd),
-        });
-        countUpdated++;
-        log(`[${i}] ${sku}: Aggiornato Ecwid (${found.id})`);
-      } else {
-        // CREA nuovo prodotto
-        await ecwidFetch(`products`, {
-          method: 'POST',
-          body: JSON.stringify(ecwidProd),
-        });
-        countCreated++;
-        log(`[${i}] ${sku}: Creato su Ecwid`);
-      }
-    } catch (err) {
-      countError++;
-      log(`[${i}] ERRORE Ecwid upsert SKU ${sku}:`, err.message || err);
+    if (found) {
+      await ecwidFetch(`products/${found.id}`, {
+        method: 'PUT',
+        body: JSON.stringify(ecwidProd),
+      });
+      log(`[${i}] ${sku}: Aggiornato Ecwid (${found.id})`);
+      return 'updated';
+    } else {
+      await ecwidFetch(`products`, {
+        method: 'POST',
+        body: JSON.stringify(ecwidProd),
+      });
+      log(`[${i}] ${sku}: Creato su Ecwid`);
+      return 'created';
     }
-    if (i % 10 === 0) log(`Progresso: ${i}/${listino.price_list.length}`);
+  } catch (err) {
+    log(`[${i}] Errore generale su prodotto:`, err.message || err);
+    return 'error';
   }
-  log(`Sync COMPLETA Ecwid: ${countCreated} creati, ${countUpdated} aggiornati, ${countIgnored} ignorati, ${countError} errori`);
-  return { created: countCreated, updated: countUpdated, ignored: countIgnored, error: countError };
+}
+
+// ----> BATCH PROCESSOR: gestisce fino a 10 prodotti in parallelo
+async function syncMSYtoEcwid() {
+  log('Inizio sync MSY-Ecwid...');
+  const listinoResp = await fetch(MSY_URL);
+  if (!listinoResp.ok) throw new Error(`MSY download HTTP ${listinoResp.status}`);
+  const listino = await listinoResp.json();
+  if (!listino || !Array.isArray(listino.price_list)) throw new Error('price_list non valido!');
+  log(`Listino MSY scaricato: ${listino.price_list.length} prodotti`);
+
+  let countCreated = 0, countUpdated = 0, countError = 0;
+  const BATCH_SIZE = 10;
+  for (let i = 0; i < listino.price_list.length; i += BATCH_SIZE) {
+    const batch = listino.price_list.slice(i, i + BATCH_SIZE);
+    const results = await Promise.all(batch.map((prod, idx) =>
+      processProduct(prod, i + idx)
+    ));
+    countCreated += results.filter(r => r === 'created').length;
+    countUpdated += results.filter(r => r === 'updated').length;
+    countError += results.filter(r => r === 'error').length;
+    log(`Progresso: ${Math.min(i + BATCH_SIZE, listino.price_list.length)}/${listino.price_list.length}`);
+    // Aggiungi pausa breve se ricevi rate limit da Ecwid (es: await new Promise(r => setTimeout(r,200));)
+  }
+  log(`Sync COMPLETA Ecwid: ${countCreated} creati, ${countUpdated} aggiornati, ${countError} errori`);
+  return { created: countCreated, updated: countUpdated, error: countError };
 }
 
 // = ROUTE SICURA PER SYNC =
@@ -108,7 +114,6 @@ app.post('/v1/ecwid-sync', async (req, res) => {
     const risultato = await syncMSYtoEcwid();
     res.status(200).json({ success: true, ...risultato });
   } catch (err) {
-    // Logging error sul server e ritorno JSON di errore
     log('Errore in /v1/ecwid-sync:', err.message || err);
     res.status(500).json({ success: false, error: err.message });
   }
