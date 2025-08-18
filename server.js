@@ -10,13 +10,38 @@ process.on('uncaughtException', (err) => {
 require('dotenv').config();
 const express = require('express');
 const fetch = require('node-fetch');
+const cors = require('cors');
 const app = express();
 app.use(express.json());
+
+// ----- CORS GLOBALE -----
+app.use(cors({
+  origin: '*',
+  methods: 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS',
+  allowedHeaders: 'Content-Type, Authorization, X-API-Key',
+}));
 
 // ----- MIDDLEWARE LOGGING GLOBALE -----
 app.use((req, res, next) => {
   console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
   next();
+});
+
+// ----- MIDDLEWARE PER RICHIESTE ABORTITE/CHIUSE DAL CLIENT -----
+app.use((req, res, next) => {
+  req.on('aborted', () => {
+    console.warn(`[ABORTED] La richiesta del client è stata chiusa prima della risposta: ${req.method} ${req.url}`);
+  });
+  next();
+});
+
+// ----- MIDDLEWARE GLOBALE DI ERRORE PER ABORT O ALTRO -----
+app.use((err, req, res, next) => {
+  if (err && (err.name === 'BadRequestError' || err.message === 'request aborted')) {
+    console.warn('Caught aborted request:', err);
+    return res.status(499).send('Client Closed Request');
+  }
+  next(err);
 });
 
 // Variabili d'ambiente (configurale in .env)
@@ -38,14 +63,12 @@ const ecwidFetch = (endpoint, options = {}) =>
 // Log robusto
 const log = (...args) => console.log(new Date().toISOString(), ...args);
 
-// Funzione di sync e gestione prodotti (con batch paralleli)
+// Funzione di sync in batch paralleli
 async function processProduct(prodotto, i) {
   try {
-    // Se manca uno SKU, genera uno fittizio unico
     const sku = prodotto.article_num && String(prodotto.article_num).trim()
       ? String(prodotto.article_num).trim()
       : `NO-SKU-${i}`;
-    // Cerca per SKU (anche virtuale)
     let found = null;
     try {
       const searchRes = await ecwidFetch(`products?sku=${encodeURIComponent(sku)}`);
@@ -53,13 +76,11 @@ async function processProduct(prodotto, i) {
     } catch (err) {
       log(`[${i}] Errore ricerca Ecwid SKU ${sku}:`, err);
     }
-    // Mappa dati da MSY verso Ecwid
     const ecwidProd = {
       sku,
       name: prodotto.name || sku,
       price: Number(prodotto.price) || 0,
       quantity: prodotto.stock != null ? Number(prodotto.stock) : 0,
-      // Puoi aggiungere altre proprietà Ecwid qui, esempio immagini/descriptions
     };
     if (found) {
       await ecwidFetch(`products/${found.id}`, {
@@ -82,7 +103,6 @@ async function processProduct(prodotto, i) {
   }
 }
 
-// ----> BATCH PROCESSOR: gestisce fino a 10 prodotti in parallelo
 async function syncMSYtoEcwid() {
   log('Inizio sync MSY-Ecwid...');
   const listinoResp = await fetch(MSY_URL);
@@ -102,13 +122,11 @@ async function syncMSYtoEcwid() {
     countUpdated += results.filter(r => r === 'updated').length;
     countError += results.filter(r => r === 'error').length;
     log(`Progresso: ${Math.min(i + BATCH_SIZE, listino.price_list.length)}/${listino.price_list.length}`);
-    // Aggiungi pausa breve se ricevi rate limit da Ecwid (es: await new Promise(r => setTimeout(r,200));)
   }
   log(`Sync COMPLETA Ecwid: ${countCreated} creati, ${countUpdated} aggiornati, ${countError} errori`);
   return { created: countCreated, updated: countUpdated, error: countError };
 }
 
-// = ROUTE SICURA PER SYNC =
 app.post('/v1/ecwid-sync', async (req, res) => {
   try {
     const risultato = await syncMSYtoEcwid();
@@ -119,11 +137,11 @@ app.post('/v1/ecwid-sync', async (req, res) => {
   }
 });
 
-// ----- AVVIO SERVER -----
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  log(`Server in ascolto sulla porta ${PORT}`);
+const server = app.listen(process.env.PORT || 3000, () => {
+  log(`Server in ascolto sulla porta ${process.env.PORT || 3000}`);
 });
 
-// ----- EXPORT (per test o altro) -----
+// Timeout HTTP del server esplicitato (2 minuti = 120000 ms)
+server.setTimeout(120000);
+
 module.exports = { syncMSYtoEcwid };
