@@ -1,4 +1,7 @@
-// ----- GLOBAL ERROR HANDLING -----
+Certo! Ecco il codice completo del tuo server.js, con l’endpoint /health inserito nel punto corretto. Puoi semplicemente sostituire tutto il file con questa versione, senza rischio di errori di copia/incolla:
+
+js
+// Error handling globale
 process.on('unhandledRejection', (reason, p) => {
   console.error('Unhandled Rejection at:', p, 'reason:', reason);
 });
@@ -6,28 +9,29 @@ process.on('uncaughtException', (err) => {
   console.error('Uncaught Exception thrown:', err);
 });
 
-// ----- IMPORT & CONFIG -----
+// Import & config
 require('dotenv').config();
 const express = require('express');
 const fetch = require('node-fetch');
 const cors = require('cors');
 const app = express();
+
 app.use(express.json());
 
-// ----- CORS GLOBALE -----
+// CORS globale
 app.use(cors({
   origin: '*',
   methods: 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS',
   allowedHeaders: 'Content-Type, Authorization, X-API-Key',
 }));
 
-// ----- MIDDLEWARE LOGGING GLOBALE -----
+// Logging globale
 app.use((req, res, next) => {
   console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
   next();
 });
 
-// ----- MIDDLEWARE PER RICHIESTE ABORTITE/CHIUSE DAL CLIENT -----
+// Middleware per richieste abortite/chiuse dal client
 app.use((req, res, next) => {
   req.on('aborted', () => {
     console.warn(`[ABORTED] La richiesta del client è stata chiusa prima della risposta: ${req.method} ${req.url}`);
@@ -35,7 +39,7 @@ app.use((req, res, next) => {
   next();
 });
 
-// ----- MIDDLEWARE GLOBALE DI ERRORE PER ABORT O ALTRO -----
+// Middleware di errore globale (per richieste abortite)
 app.use((err, req, res, next) => {
   if (err && (err.name === 'BadRequestError' || err.message === 'request aborted')) {
     console.warn('Caught aborted request:', err);
@@ -44,12 +48,12 @@ app.use((err, req, res, next) => {
   next(err);
 });
 
-// Variabili d'ambiente (configurale in .env)
+// Variabili d'ambiente
 const ECWID_STORE_ID = process.env.ECWID_STORE_ID;
 const ECWID_TOKEN = process.env.ECWID_SECRET_TOKEN;
 const MSY_URL = 'https://msy.madtec.be/price_list/pricelist_en.json';
 
-// Helper per chiamate Ecwid API
+// Helper API Ecwid
 const ecwidFetch = (endpoint, options = {}) =>
   fetch(`https://app.ecwid.com/api/v3/${ECWID_STORE_ID}/${endpoint}`, {
     ...options,
@@ -63,7 +67,7 @@ const ecwidFetch = (endpoint, options = {}) =>
 // Log robusto
 const log = (...args) => console.log(new Date().toISOString(), ...args);
 
-// Funzione di sync in batch paralleli
+// Funzione di sync
 async function processProduct(prodotto, i) {
   try {
     const sku = prodotto.article_num && String(prodotto.article_num).trim()
@@ -110,7 +114,6 @@ async function syncMSYtoEcwid() {
   const listino = await listinoResp.json();
   if (!listino || !Array.isArray(listino.price_list)) throw new Error('price_list non valido!');
   log(`Listino MSY scaricato: ${listino.price_list.length} prodotti`);
-
   let countCreated = 0, countUpdated = 0, countError = 0;
   const BATCH_SIZE = 10;
   for (let i = 0; i < listino.price_list.length; i += BATCH_SIZE) {
@@ -137,11 +140,17 @@ app.post('/v1/ecwid-sync', async (req, res) => {
   }
 });
 
+// *** ENDPOINT HEALTHCHECK ***
+app.get('/health', (req, res) => {
+  res.status(200).send('ok');
+});
+
+// Avvio del server
 const server = app.listen(process.env.PORT || 3000, () => {
   log(`Server in ascolto sulla porta ${process.env.PORT || 3000}`);
 });
 
-// Timeout HTTP del server esplicitato (2 minuti = 120000 ms)
+// Timeout HTTP
 server.setTimeout(120000);
 
 module.exports = { syncMSYtoEcwid };
