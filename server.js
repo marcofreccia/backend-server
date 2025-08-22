@@ -9,23 +9,26 @@ process.on('uncaughtException', (err) => {
 // ----- IMPORT & CONFIG -----
 require('dotenv').config();
 const express = require('express');
-const fetch = require('node-fetch'); // versione CJS, va bene su Railway
-
+const fetch = require('node-fetch');
 const app = express();
 app.use(express.json());
 
-// ----- MIDDLEWARE LOGGING GLOBALE -----
-app.use((req, res, next) => {
-  console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
-  next();
+// ----- HEALTHCHECK: ROTTA RICHIESTA DA RAILWAY -----
+app.get('/health', (req, res) => {
+  res.status(200).json({ status: 'ok' });
 });
 
-// Variabili d'ambiente: aggiungile su .env o variabili Railway!
+// ------ VARIABILI AMBIENTE ------
 const ECWID_STORE_ID = process.env.ECWID_STORE_ID;
 const ECWID_TOKEN = process.env.ECWID_SECRET_TOKEN;
 const MSY_URL = 'https://msy.madtec.be/price_list/pricelist_en.json';
 
-// Helper per chiamate Ecwid API
+// ----- LOGGING HELPER -----
+function log(...args) {
+  console.log(new Date().toISOString(), ...args);
+}
+
+// ----- ECWID FETCH HELPER -----
 async function ecwidFetch(endpoint, options = {}) {
   const url = `https://app.ecwid.com/api/v3/${ECWID_STORE_ID}/${endpoint}`;
   const headers = {
@@ -33,25 +36,17 @@ async function ecwidFetch(endpoint, options = {}) {
     'Content-Type': 'application/json',
     ...(options.headers || {}),
   };
-  const response = await fetch(url, {
-    ...options,
-    headers,
-  });
+  const response = await fetch(url, { ...options, headers });
   const data = await response.json();
   return data;
 }
 
-// Logging helper
-function log(...args) {
-  console.log(new Date().toISOString(), ...args);
-}
-
-// Funzione di sincronizzazione completa (con immagini e attributi)
+// ------ FUNZIONE DI SYNC ------
 async function syncMSYtoEcwid() {
   log('Inizio sync MSY→Ecwid...');
-  // Scarica listino
+  // 1. Scarica listino
   const listinoResp = await fetch(MSY_URL);
-  if (!listinoResp.ok) throw new Error(`MSY errore HTTP ${listinoResp.status}`);
+  if (!listinoResp.ok) throw new Error(`Errore download MSY HTTP ${listinoResp.status}`);
   const listino = await listinoResp.json();
   if (!listino || !Array.isArray(listino.price_list)) throw new Error('price_list non valido!');
 
@@ -73,7 +68,7 @@ async function syncMSYtoEcwid() {
       continue;
     }
 
-    // PREPARA PRODOTTO ecwid (puoi estendere qui immagini, attributi custom)
+    // ---- MAPPING PRODOTTO ----
     const images = ['photo_1','photo_2','photo_3','photo_4','photo_5']
       .map(c => prodotto[c])
       .filter(Boolean)
@@ -102,7 +97,7 @@ async function syncMSYtoEcwid() {
 
     try {
       if (found) {
-        // Aggiorna
+        // UPDATE prodotto
         await ecwidFetch(`products/${found.id}`, {
           method: 'PUT',
           body: JSON.stringify(ecwidProd),
@@ -110,7 +105,7 @@ async function syncMSYtoEcwid() {
         countUpdated++;
         log(`[${i}] ${sku}: Aggiornato Ecwid (${found.id})`);
       } else {
-        // Crea nuovo prodotto
+        // CREA nuovo prodotto
         await ecwidFetch(`products`, {
           method: 'POST',
           body: JSON.stringify(ecwidProd),
@@ -128,7 +123,7 @@ async function syncMSYtoEcwid() {
   return { created: countCreated, updated: countUpdated, ignored: countIgnored, error: countError };
 }
 
-// ===== ROUTE PER AVVIO SYNC MANUALE =====
+// ===== ROUTE PER AVVIARE LA SYNC MANUALE =====
 app.post('/v1/ecwid-sync', async (req, res) => {
   try {
     const risultato = await syncMSYtoEcwid();
@@ -140,6 +135,8 @@ app.post('/v1/ecwid-sync', async (req, res) => {
 });
 
 const PORT = process.env.PORT || 9000;
-app.listen(PORT, () => { log(`Server in ascolto sulla porta ${PORT}`); });
+app.listen(PORT, () => {
+  log(`Server in ascolto sulla porta ${PORT}`);
+});
 
 module.exports = { syncMSYtoEcwid };
