@@ -1,7 +1,4 @@
-Certo! Ecco il codice completo del tuo server.js, con l’endpoint /health inserito nel punto corretto. Puoi semplicemente sostituire tutto il file con questa versione, senza rischio di errori di copia/incolla:
-
-js
-// Error handling globale
+// ----- GLOBAL ERROR HANDLING -----
 process.on('unhandledRejection', (reason, p) => {
   console.error('Unhandled Rejection at:', p, 'reason:', reason);
 });
@@ -9,51 +6,26 @@ process.on('uncaughtException', (err) => {
   console.error('Uncaught Exception thrown:', err);
 });
 
-// Import & config
+// ----- IMPORT & CONFIG -----
 require('dotenv').config();
 const express = require('express');
-const fetch = require('node-fetch');
-const cors = require('cors');
-const app = express();
+const fetch = require('node-fetch'); // usa import('node-fetch') se ESM
 
+const app = express();
 app.use(express.json());
 
-// CORS globale
-app.use(cors({
-  origin: '*',
-  methods: 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS',
-  allowedHeaders: 'Content-Type, Authorization, X-API-Key',
-}));
-
-// Logging globale
+// ----- MIDDLEWARE LOGGING GLOBALE -----
 app.use((req, res, next) => {
   console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
   next();
 });
 
-// Middleware per richieste abortite/chiuse dal client
-app.use((req, res, next) => {
-  req.on('aborted', () => {
-    console.warn(`[ABORTED] La richiesta del client è stata chiusa prima della risposta: ${req.method} ${req.url}`);
-  });
-  next();
-});
-
-// Middleware di errore globale (per richieste abortite)
-app.use((err, req, res, next) => {
-  if (err && (err.name === 'BadRequestError' || err.message === 'request aborted')) {
-    console.warn('Caught aborted request:', err);
-    return res.status(499).send('Client Closed Request');
-  }
-  next(err);
-});
-
-// Variabili d'ambiente
+// Variabili d'ambiente (configurale in .env)
 const ECWID_STORE_ID = process.env.ECWID_STORE_ID;
 const ECWID_TOKEN = process.env.ECWID_SECRET_TOKEN;
 const MSY_URL = 'https://msy.madtec.be/price_list/pricelist_en.json';
 
-// Helper API Ecwid
+// Helper per chiamate Ecwid API
 const ecwidFetch = (endpoint, options = {}) =>
   fetch(`https://app.ecwid.com/api/v3/${ECWID_STORE_ID}/${endpoint}`, {
     ...options,
@@ -67,90 +39,90 @@ const ecwidFetch = (endpoint, options = {}) =>
 // Log robusto
 const log = (...args) => console.log(new Date().toISOString(), ...args);
 
-// Funzione di sync
-async function processProduct(prodotto, i) {
-  try {
-    const sku = prodotto.article_num && String(prodotto.article_num).trim()
-      ? String(prodotto.article_num).trim()
-      : `NO-SKU-${i}`;
-    let found = null;
-    try {
-      const searchRes = await ecwidFetch(`products?sku=${encodeURIComponent(sku)}`);
-      found = searchRes && Array.isArray(searchRes.items) && searchRes.items[0];
-    } catch (err) {
-      log(`[${i}] Errore ricerca Ecwid SKU ${sku}:`, err);
-    }
-    const ecwidProd = {
-      sku,
-      name: prodotto.name || sku,
-      price: Number(prodotto.price) || 0,
-      quantity: prodotto.stock != null ? Number(prodotto.stock) : 0,
-    };
-    if (found) {
-      await ecwidFetch(`products/${found.id}`, {
-        method: 'PUT',
-        body: JSON.stringify(ecwidProd),
-      });
-      log(`[${i}] ${sku}: Aggiornato Ecwid (${found.id})`);
-      return 'updated';
-    } else {
-      await ecwidFetch(`products`, {
-        method: 'POST',
-        body: JSON.stringify(ecwidProd),
-      });
-      log(`[${i}] ${sku}: Creato su Ecwid`);
-      return 'created';
-    }
-  } catch (err) {
-    log(`[${i}] Errore generale su prodotto:`, err.message || err);
-    return 'error';
-  }
-}
-
+// Funzione principale di sync
 async function syncMSYtoEcwid() {
   log('Inizio sync MSY-Ecwid...');
+  // 1. Scarica e valida listino
   const listinoResp = await fetch(MSY_URL);
   if (!listinoResp.ok) throw new Error(`MSY download HTTP ${listinoResp.status}`);
   const listino = await listinoResp.json();
   if (!listino || !Array.isArray(listino.price_list)) throw new Error('price_list non valido!');
   log(`Listino MSY scaricato: ${listino.price_list.length} prodotti`);
-  let countCreated = 0, countUpdated = 0, countError = 0;
-  const BATCH_SIZE = 10;
-  for (let i = 0; i < listino.price_list.length; i += BATCH_SIZE) {
-    const batch = listino.price_list.slice(i, i + BATCH_SIZE);
-    const results = await Promise.all(batch.map((prod, idx) =>
-      processProduct(prod, i + idx)
-    ));
-    countCreated += results.filter(r => r === 'created').length;
-    countUpdated += results.filter(r => r === 'updated').length;
-    countError += results.filter(r => r === 'error').length;
-    log(`Progresso: ${Math.min(i + BATCH_SIZE, listino.price_list.length)}/${listino.price_list.length}`);
+
+  let countCreated = 0, countUpdated = 0, countIgnored = 0, countError = 0;
+
+  // 2. Ciclo prodotti
+  for (const [i, prodotto] of listino.price_list.entries()) {
+    const sku = prodotto.article_num && String(prodotto.article_num).trim();
+    if (!sku) {
+      countIgnored++;
+      log(`[${i}] Nessun SKU, prodotto ignorato`, prodotto.name || prodotto);
+      continue;
+    }
+    // 2a. Cerca SKU in Ecwid
+    let found = null;
+    try {
+      const searchRes = await ecwidFetch(`products?sku=${encodeURIComponent(sku)}`);
+      found = searchRes && Array.isArray(searchRes.items) && searchRes.items[0];
+    } catch (err) {
+      countError++;
+      log(`[${i}] Errore Ecwid search SKU ${sku}:`, err);
+      continue;
+    }
+    // 2b. Prepara struttura prodotto Ecwid
+    const ecwidProd = {
+      sku,
+      name: prodotto.name || sku,
+      price: Number(prodotto.price) || 0,
+      quantity: prodotto.stock != null ? Number(prodotto.stock) : 0,
+      // Puoi aggiungere immagini, descrizioni, attributi qui se richiesto
+    };
+    try {
+      if (found) {
+        // UPDATE prodotto
+        await ecwidFetch(`products/${found.id}`, {
+          method: 'PUT',
+          body: JSON.stringify(ecwidProd),
+        });
+        countUpdated++;
+        log(`[${i}] ${sku}: Aggiornato Ecwid (${found.id})`);
+      } else {
+        // CREA nuovo prodotto
+        await ecwidFetch(`products`, {
+          method: 'POST',
+          body: JSON.stringify(ecwidProd),
+        });
+        countCreated++;
+        log(`[${i}] ${sku}: Creato su Ecwid`);
+      }
+    } catch (err) {
+      countError++;
+      log(`[${i}] ERRORE Ecwid upsert SKU ${sku}:`, err.message || err);
+    }
+    if (i % 10 === 0) log(`Progresso: ${i}/${listino.price_list.length}`);
   }
-  log(`Sync COMPLETA Ecwid: ${countCreated} creati, ${countUpdated} aggiornati, ${countError} errori`);
-  return { created: countCreated, updated: countUpdated, error: countError };
+  log(`Sync COMPLETA Ecwid: ${countCreated} creati, ${countUpdated} aggiornati, ${countIgnored} ignorati, ${countError} errori`);
+  return { created: countCreated, updated: countUpdated, ignored: countIgnored, error: countError };
 }
 
+// ===== ROUTE SICURA PER SYNC =====
+// = ROUTE SICURA PER SYNC =
 app.post('/v1/ecwid-sync', async (req, res) => {
   try {
     const risultato = await syncMSYtoEcwid();
     res.status(200).json({ success: true, ...risultato });
   } catch (err) {
+    // Logging error sul server e ritorno JSON di errore
     log('Errore in /v1/ecwid-sync:', err.message || err);
     res.status(500).json({ success: false, error: err.message });
   }
 });
 
-// *** ENDPOINT HEALTHCHECK ***
-app.get('/health', (req, res) => {
-  res.status(200).send('ok');
+// ----- AVVIO SERVER -----
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  log(`Server in ascolto sulla porta ${PORT}`);
 });
 
-// Avvio del server
-const server = app.listen(process.env.PORT || 3000, () => {
-  log(`Server in ascolto sulla porta ${process.env.PORT || 3000}`);
-});
-
-// Timeout HTTP
-server.setTimeout(120000);
-
+// ----- EXPORT (per test o altro) -----
 module.exports = { syncMSYtoEcwid };
