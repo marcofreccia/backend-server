@@ -309,5 +309,3 @@ app.listen(PORT, () => {
 
 // === CORRETTA: NON mettere altro dopo questa riga ===
 module.exports = { syncMSYtoEcwid };
-
-module.exports = { syncMSYtoEcwid };
