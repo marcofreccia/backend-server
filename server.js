@@ -71,30 +71,31 @@ async function syncMSYtoEcwid() {
     }
 
     const images = ['photo_1','photo_2','photo_3','photo_4','photo_5']
-      .map(c => prodotto[c])
-      .filter(Boolean)
-      .map(url => ({ url }));
-    const ecwidProd = {
-      sku,
-      name: prodotto.name || sku,
-      price: Number(prodotto.price) || 0,
-      quantity: prodotto.stock != null ? Number(prodotto.stock) : 0,
-      weight: prodotto.weight ? Number(prodotto.weight) : undefined,
-      description: prodotto.description,
-      images,
-      brand: prodotto.brand,
-     attributes: [
-  { name: 'Recommended Price', value: prodotto.price_recommended != null ? String(prodotto.price_recommended) : "" },
-  { name: 'VAT', value: prodotto.vat_rate != null ? String(prodotto.vat_rate) : "" },
-  { name: 'Category', value: prodotto.cat != null ? String(prodotto.cat) : "" },
-  { name: 'Subcategory', value: prodotto.scat != null ? String(prodotto.scat) : "" },
-  { name: 'EAN', value: prodotto.ean != null ? String(prodotto.ean) : "" },
-  { name: 'Volume', value: prodotto.volume != null ? String(prodotto.volume) : "" },
-  { name: 'Height', value: prodotto.height != null ? String(prodotto.height) : "" },
-  { name: 'Width', value: prodotto.width != null ? String(prodotto.width) : "" },
-  { name: 'Length', value: prodotto.length != null ? String(prodotto.length) : "" }
-]
-    };
+  .map(c => prodotto[c])
+  .filter(url => !!url && typeof url === "string" && url.startsWith("http"))
+  .map(url => ({ url }));
+   const ecwidProd = {
+  sku,
+  name: prodotto.name || sku,
+  price: Number(prodotto.price) || 0,
+  quantity: prodotto.stock != null ? Number(prodotto.stock) : 0,
+  weight: prodotto.weight ? Number(prodotto.weight) : undefined,
+  description: prodotto.description,
+  enabled: true, // <--- PRODOTTO PUBBLICATO
+  images,
+  brand: prodotto.brand,
+  attributes: [
+    { name: 'Recommended Price', value: prodotto.price_recommended != null ? String(prodotto.price_recommended) : "" },
+    { name: 'VAT', value: prodotto.vat_rate != null ? String(prodotto.vat_rate) : "" },
+    { name: 'Category', value: prodotto.cat != null ? String(prodotto.cat) : "" },
+    { name: 'Subcategory', value: prodotto.scat != null ? String(prodotto.scat) : "" },
+    { name: 'EAN', value: prodotto.ean != null ? String(prodotto.ean) : "" },
+    { name: 'Volume', value: prodotto.volume != null ? String(prodotto.volume) : "" },
+    { name: 'Height', value: prodotto.height != null ? String(prodotto.height) : "" },
+    { name: 'Width', value: prodotto.width != null ? String(prodotto.width) : "" },
+    { name: 'Length', value: prodotto.length != null ? String(prodotto.length) : "" }
+  ]
+};
 
     try {
       let ecwidResp;
