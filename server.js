@@ -41,6 +41,131 @@ async function ecwidFetch(endpoint, options = {}) {
   return data;
 }
 
+// ------ FUNZIONE DI SYNC (con logging errori Ecwid) ------
+async function syncMSYtoEcwid() {
+  log('Inizio sync MSY→Ecwid...');
+  const listinoResp = await fetch(MSY_URL);
+  if (!listinoResp.ok) throw new Error(`Errore download MSY HTTP ${listinoResp.status}`);
+  const listino = await listinoResp.json();
+  if (!listino || !Array.isArray(listino.price_list)) throw new Error('price_list non valido!');
+
+  let countCreated = 0, countUpdated = 0, countIgnored = 0, countError = 0;
+  const errorSKUs = [];
+
+  for (const [i, prodotto] of listino.price_list.entries()) {
+    const sku = prodotto.article_num && String(prodotto.article_num).trim();
+    if (!sku) {
+      countIgnored++;
+      log(`[${i}] Nessun SKU, prodotto ignorato`, prodotto.name || prodotto);
+      continue;
+    }
+    let found = null;
+    try {
+      const searchRes = await ecwidFetch(`products?sku=${encodeURIComponent(sku)}`);
+      found = searchRes && Array.isArray(searchRes.items) && searchRes.items[0];
+    } catch (err) {
+      countError++;
+      log(`[${i}] Errore Ecwid search SKU ${sku}:`, err);
+      errorSKUs.push({ sku, step: 'search', error: err.message || err });
+      continue;
+    }
+
+    const images = ['photo_1','photo_2','photo_3','photo_4','photo_5']
+      .map(c => prodotto[c])
+      .filter(Boolean)
+      .map(url => ({ url }));
+    const ecwidProd = {
+      sku,
+      name: prodotto.name || sku,
+      price: Number(prodotto.price) || 0,
+      quantity: prodotto.stock != null ? Number(prodotto.stock) : 0,
+      weight: prodotto.weight ? Number(prodotto.weight) : undefined,
+      description: prodotto.description,
+      images,
+      brand: prodotto.brand,
+      attributes: [
+        { name: 'Recommended Price', value: prodotto.price_recommended },
+        { name: 'VAT', value: prodotto.vat_rate },
+        { name: 'Category', value: prodotto.cat },
+        { name: 'Subcategory', value: prodotto.scat },
+        { name: 'EAN', value: prodotto.ean },
+        { name: 'Volume', value: prodotto.volume },
+        { name: 'Height', value: prodotto.height },
+        { name: 'Width', value: prodotto.width },
+        { name: 'Length', value: prodotto.length }
+      ]
+    };
+
+    try {
+      let ecwidResp;
+      if (found) {
+        ecwidResp = await ecwidFetch(`products/${found.id}`, {
+          method: 'PUT',
+          body: JSON.stringify(ecwidProd),
+        });
+        // --- FIX: controllo risposta update
+        if (ecwidResp && ecwidResp.errorCode) {
+          countError++;
+          log(`[${i}] ERRORE Ecwid update SKU ${sku}:`, ecwidResp.errorCode, ecwidResp.errorMessage);
+          errorSKUs.push({ sku, step: 'update', error: `${ecwidResp.errorCode} - ${ecwidResp.errorMessage}` });
+          continue;
+        }
+        countUpdated++;
+        log(`[${i}] ${sku}: Aggiornato Ecwid (${found.id})`);
+      } else {
+        ecwidResp = await ecwidFetch(`products`, {
+          method: 'POST',
+          body: JSON.stringify(ecwidProd),
+        });
+        // --- FIX: controllo risposta create
+        if (ecwidResp && ecwidResp.errorCode) {
+          countError++;
+          log(`[${i}] ERRORE Ecwid create SKU ${sku}:`, ecwidResp.errorCode, ecwidResp.errorMessage);
+          errorSKUs.push({ sku, step: 'create', error: `${ecwidResp.errorCode} - ${ecwidResp.errorMessage}` });
+          continue;
+        }
+        countCreated++;
+        log(`[${i}] ${sku}: Creato su Ecwid`);
+      }
+    } catch (err) {
+      countError++;
+      log(`[${i}] ERRORE Ecwid upsert SKU ${sku}:`, err.message || err);
+      errorSKUs.push({ sku, step: 'upsert', error: err.message || err });
+    }
+    if (i % 10 === 0) log(`Progresso: ${i}/${listino.price_list.length}`);
+  }
+  if (errorSKUs.length > 0) {
+    log('=== ERRORI RISCONTRATI DURANTE LA SYNC ===');
+    errorSKUs.forEach(e => log(`SKU ${e.sku} [${e.step}]: ${e.error}`));
+    log(`Totale prodotti con errore: ${errorSKUs.length}`);
+  }
+  log(`Sync COMPLETA Ecwid: ${countCreated} creati, ${countUpdated} aggiornati, ${countIgnored} ignorati, ${countError} errori`);
+  return { created: countCreated, updated: countUpdated, ignored: countIgnored, error: countError, errorSKUs };
+}
+
+// ===== ROUTE PER AVVIARE LA SYNC MANUALE =====
+app.post('/v1/ecwid-sync', async (req, res) => {
+  try {
+    const risultato = await syncMSYtoEcwid();
+    res.status(200).json({ success: true, ...risultato });
+  } catch (err) {
+    log('Errore in /v1/ecwid-sync:', err.message || err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+const PORT = process.env.PORT || 9000;
+app.listen(PORT, () => {
+  log(`Server in ascolto sulla porta ${PORT}`);
+});
+
+module.exports = { syncMSYtoEcwid };    ...(options.headers || {}),
+  };
+  const response = await fetch(url, { ...options, headers });
+  const data = await response.json();
+  return data;
+}
+
 // ------ FUNZIONE DI SYNC ------
 async function syncMSYtoEcwid() {
   log('Inizio sync MSY→Ecwid...');
