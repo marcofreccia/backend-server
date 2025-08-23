@@ -23,6 +23,22 @@ const ECWID_STORE_ID = process.env.ECWID_STORE_ID;
 const ECWID_TOKEN = process.env.ECWID_SECRET_TOKEN;
 const MSY_URL = 'https://msy.madtec.be/price_list/pricelist_en.json';
 
+// ====== MAPPA CATEGORIE ECWID ======
+const mappaCategorieEcwid = {
+  "PRE-ORDER": 176669407,
+  "FITNESS": 185397803,
+  "ELECTROMANEGERS": 185397545,
+  "PERFUME": 185397804,
+  "ELDERLY CARE": 185397546,
+  "TOOLS": 185397800,
+  "Kitchen & Tableware": 185397797,
+  "Kitchenware": 185397802,
+  "Pet Care": 185397801,
+  "Beauty & Wellness": 185397799,
+  "Home and Living": 185397798,
+  "Appliances": 185397544
+};
+
 // ----- LOGGING HELPER -----
 function log(...args) {
   console.log(new Date().toISOString(), ...args);
@@ -35,6 +51,137 @@ async function ecwidFetch(endpoint, options = {}) {
     'Authorization': `Bearer ${ECWID_TOKEN}`,
     'Content-Type': 'application/json',
     ...(options.headers || {}),
+  };
+  const response = await fetch(url, { ...options, headers });
+  const data = await response.json();
+  return data;
+}
+
+// ------ FUNZIONE DI SYNC (con categoria auto & PRE-ORDER default) ------
+async function syncMSYtoEcwid() {
+  log('Inizio sync MSY→Ecwid...');
+  const listinoResp = await fetch(MSY_URL);
+  if (!listinoResp.ok) throw new Error(`Errore download MSY HTTP ${listinoResp.status}`);
+  const listino = await listinoResp.json();
+  if (!listino || !Array.isArray(listino.price_list)) throw new Error('price_list non valido!');
+
+  let countCreated = 0, countUpdated = 0, countIgnored = 0, countError = 0;
+  const errorSKUs = [];
+
+  for (const [i, prodotto] of listino.price_list.entries()) {
+    const sku = prodotto.article_num && String(prodotto.article_num).trim();
+    if (!sku) {
+      countIgnored++;
+      log(`[${i}] Nessun SKU, prodotto ignorato`, prodotto.name || prodotto);
+      continue;
+    }
+    let found = null;
+    try {
+      const searchRes = await ecwidFetch(`products?sku=${encodeURIComponent(sku)}`);
+      found = searchRes && Array.isArray(searchRes.items) && searchRes.items[0];
+    } catch (err) {
+      countError++;
+      log(`[${i}] Errore Ecwid search SKU ${sku}:`, err);
+      errorSKUs.push({ sku, step: 'search', error: err.message || err });
+      continue;
+    }
+
+    // --- Category assignment by CAT automatic, default PRE-ORDER ---
+    const idCategoriaEcwid = prodotto.cat && mappaCategorieEcwid[prodotto.cat.trim()]
+      ? mappaCategorieEcwid[prodotto.cat.trim()]
+      : 176669407; // <--- DEFAULT PRE-ORDER
+
+    const images = ['photo_1','photo_2','photo_3','photo_4','photo_5']
+      .map(c => prodotto[c])
+      .filter(url => !!url && typeof url === "string" && url.startsWith("http"))
+      .map(url => ({ url }));
+
+    const ecwidProd = {
+      sku,
+      name: prodotto.name || sku,
+      price: Number(prodotto.price) || 0,
+      quantity: prodotto.stock != null ? Number(prodotto.stock) : 0,
+      weight: prodotto.weight ? Number(prodotto.weight) : undefined,
+      description: prodotto.description,
+      enabled: true, // prodotto pubblicato
+      images,
+      brand: prodotto.brand,
+      categories: [idCategoriaEcwid],
+      attributes: [
+        { name: 'Recommended Price', value: prodotto.price_recommended != null ? String(prodotto.price_recommended) : "" },
+        { name: 'VAT', value: prodotto.vat_rate != null ? String(prodotto.vat_rate) : "" },
+        { name: 'Category', value: prodotto.cat != null ? String(prodotto.cat) : "" },
+        { name: 'Subcategory', value: prodotto.scat != null ? String(prodotto.scat) : "" },
+        { name: 'EAN', value: prodotto.ean != null ? String(prodotto.ean) : "" },
+        { name: 'Volume', value: prodotto.volume != null ? String(prodotto.volume) : "" },
+        { name: 'Height', value: prodotto.height != null ? String(prodotto.height) : "" },
+        { name: 'Width', value: prodotto.width != null ? String(prodotto.width) : "" },
+        { name: 'Length', value: prodotto.length != null ? String(prodotto.length) : "" }
+      ]
+    };
+
+    try {
+      let ecwidResp;
+      if (found) {
+        ecwidResp = await ecwidFetch(`products/${found.id}`, {
+          method: 'PUT',
+          body: JSON.stringify(ecwidProd),
+        });
+        if (ecwidResp && ecwidResp.errorCode) {
+          countError++;
+          log(`[${i}] ERRORE Ecwid update SKU ${sku}:`, ecwidResp.errorCode, ecwidResp.errorMessage);
+          errorSKUs.push({ sku, step: 'update', error: `${ecwidResp.errorCode} - ${ecwidResp.errorMessage}` });
+          continue;
+        }
+        countUpdated++;
+        log(`[${i}] ${sku}: Aggiornato Ecwid (${found.id})`);
+      } else {
+        ecwidResp = await ecwidFetch(`products`, {
+          method: 'POST',
+          body: JSON.stringify(ecwidProd),
+        });
+        if (ecwidResp && ecwidResp.errorCode) {
+          countError++;
+          log(`[${i}] ERRORE Ecwid create SKU ${sku}:`, ecwidResp.errorCode, ecwidResp.errorMessage);
+          errorSKUs.push({ sku, step: 'create', error: `${ecwidResp.errorCode} - ${ecwidResp.errorMessage}` });
+          continue;
+        }
+        countCreated++;
+        log(`[${i}] ${sku}: Creato su Ecwid`);
+      }
+    } catch (err) {
+      countError++;
+      log(`[${i}] ERRORE Ecwid upsert SKU ${sku}:`, err.message || err);
+      errorSKUs.push({ sku, step: 'upsert', error: err.message || err });
+    }
+    if (i % 10 === 0) log(`Progresso: ${i}/${listino.price_list.length}`);
+  }
+  if (errorSKUs.length > 0) {
+    log('=== ERRORI RISCONTRATI DURANTE LA SYNC ===');
+    errorSKUs.forEach(e => log(`SKU ${e.sku} [${e.step}]: ${e.error}`));
+    log(`Totale prodotti con errore: ${errorSKUs.length}`);
+  }
+  log(`Sync COMPLETA Ecwid: ${countCreated} creati, ${countUpdated} aggiornati, ${countIgnored} ignorati, ${countError} errori`);
+  return { created: countCreated, updated: countUpdated, ignored: countIgnored, error: countError, errorSKUs };
+}
+
+// ===== ROUTE PER AVVIARE LA SYNC MANUALE =====
+app.post('/v1/ecwid-sync', async (req, res) => {
+  try {
+    const risultato = await syncMSYtoEcwid();
+    res.status(200).json({ success: true, ...risultato });
+  } catch (err) {
+    log('Errore in /v1/ecwid-sync:', err.message || err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+const PORT = process.env.PORT || 9000;
+app.listen(PORT, () => {
+  log(`Server in ascolto sulla porta ${PORT}`);
+});
+
+module.exports = { syncMSYtoEcwid };    ...(options.headers || {}),
   };
   const response = await fetch(url, { ...options, headers });
   const data = await response.json();
