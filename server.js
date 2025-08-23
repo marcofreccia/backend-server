@@ -83,17 +83,17 @@ async function syncMSYtoEcwid() {
       description: prodotto.description,
       images,
       brand: prodotto.brand,
-      attributes: [
-        { name: 'Recommended Price', value: prodotto.price_recommended },
-        { name: 'VAT', value: prodotto.vat_rate },
-        { name: 'Category', value: prodotto.cat },
-        { name: 'Subcategory', value: prodotto.scat },
-        { name: 'EAN', value: prodotto.ean },
-        { name: 'Volume', value: prodotto.volume },
-        { name: 'Height', value: prodotto.height },
-        { name: 'Width', value: prodotto.width },
-        { name: 'Length', value: prodotto.length }
-      ]
+     attributes: [
+  { name: 'Recommended Price', value: prodotto.price_recommended != null ? String(prodotto.price_recommended) : "" },
+  { name: 'VAT', value: prodotto.vat_rate != null ? String(prodotto.vat_rate) : "" },
+  { name: 'Category', value: prodotto.cat != null ? String(prodotto.cat) : "" },
+  { name: 'Subcategory', value: prodotto.scat != null ? String(prodotto.scat) : "" },
+  { name: 'EAN', value: prodotto.ean != null ? String(prodotto.ean) : "" },
+  { name: 'Volume', value: prodotto.volume != null ? String(prodotto.volume) : "" },
+  { name: 'Height', value: prodotto.height != null ? String(prodotto.height) : "" },
+  { name: 'Width', value: prodotto.width != null ? String(prodotto.width) : "" },
+  { name: 'Length', value: prodotto.length != null ? String(prodotto.length) : "" }
+]
     };
 
     try {
