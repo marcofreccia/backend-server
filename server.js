@@ -1,9 +1,18 @@
+// ----- LOGGING HELPER AGGIORNATO -----
+const logLevel = process.env.LOG_LEVEL || (process.env.NODE_ENV === 'production' ? 'warn' : 'info');
+function log(message, level = 'info') {
+  if (logLevel === 'warn' && level === 'info') return;
+  if (logLevel === 'error' && level !== 'error') return;
+  const timestamp = new Date().toISOString();
+  console.log(`[${level.toUpperCase()}]`, timestamp, message);
+}
+
 // ----- GLOBAL ERROR HANDLING -----
 process.on('unhandledRejection', (reason, p) => {
-  console.error('Unhandled Rejection at:', p, 'reason:', reason);
+  log(`Unhandled Rejection at: ${p}, reason: ${reason}`, 'error');
 });
 process.on('uncaughtException', (err) => {
-  console.error('Uncaught Exception thrown:', err);
+  log(`Uncaught Exception thrown: ${err}`, 'error');
 });
 
 // ----- IMPORT & CONFIG -----
@@ -53,12 +62,6 @@ const mappaCategorieEcwid = {
   "Appliances": 185397544
 };
 
-// ----- LOGGING HELPER -----
-function log(...args) {
-  const timestamp = new Date().toISOString();
-  console.log(timestamp, ...args);
-}
-
 // ✅ HELPER PER VALIDARE IMMAGINI
 async function validateImageUrl(url) {
   try {
@@ -75,7 +78,7 @@ async function validateImageUrl(url) {
     const contentType = response.headers.get('content-type');
     return contentType && contentType.startsWith('image/');
   } catch (error) {
-    log(`❌ Immagine non valida: ${url} - ${error.message}`);
+    log(`❌ Immagine non valida: ${url} - ${error.message}`, 'warn');
     return false;
   }
 }
@@ -101,7 +104,7 @@ async function ecwidFetch(endpoint, options = {}) {
         if (retries === 0) throw new Error(`503 Service Unavailable after retries`);
         
         const delay = (4 - retries) * 2000; // 2s, 4s, 6s
-        log(`⚠️ 503 Error, retry in ${delay}ms... (${retries} remaining)`);
+        log(`⚠️ 503 Error, retry in ${delay}ms... (${retries} remaining)`, 'warn');
         await new Promise(resolve => setTimeout(resolve, delay));
         continue;
       }
@@ -120,7 +123,7 @@ async function ecwidFetch(endpoint, options = {}) {
       retries--;
       
       const delay = (4 - retries) * 1000;
-      log(`⚠️ API Error: ${error.message}, retry in ${delay}ms...`);
+      log(`⚠️ API Error: ${error.message}, retry in ${delay}ms...`, 'warn');
       await new Promise(resolve => setTimeout(resolve, delay));
     }
   }
@@ -128,7 +131,7 @@ async function ecwidFetch(endpoint, options = {}) {
 
 // ------ FUNZIONE DI SYNC CON FILTRO PREZZO E IMMAGINI ------
 async function syncMSYtoEcwid() {
-  log('🚀 Inizio sync MSY→Ecwid con filtro prezzo e validazione immagini...');
+  log('🚀 Inizio sync MSY→Ecwid con filtro prezzo e validazione immagini...', 'info');
   
   // ✅ AGGIORNA STATO SYNC
   syncStatus.running = true;
@@ -146,7 +149,7 @@ async function syncMSYtoEcwid() {
     let countFilteredPrice = 0, countFilteredImages = 0;
     const errorSKUs = [];
 
-    log(`📦 Processando ${listino.price_list.length} prodotti...`);
+    log(`📦 Processando ${listino.price_list.length} prodotti...`, 'info');
     syncStatus.progress.total = listino.price_list.length;
     syncStatus.progress.phase = 'processing';
 
@@ -157,7 +160,7 @@ async function syncMSYtoEcwid() {
       const sku = prodotto.article_num && String(prodotto.article_num).trim();
       if (!sku) {
         countIgnored++;
-        log(`[${i}] ⏭️ Nessun SKU, prodotto ignorato`, prodotto.name || prodotto);
+        log(`[${i}] ⏭️ Nessun SKU, prodotto ignorato: ${prodotto.name || prodotto}`, 'warn');
         continue;
       }
 
@@ -169,7 +172,7 @@ async function syncMSYtoEcwid() {
       if (ENABLE_PRICE_FILTER && prezzoFinale < MIN_PRICE_THRESHOLD) {
         countIgnored++;
         countFilteredPrice++;
-        log(`[${i}] 🚫 FILTRATO PREZZO SKU ${sku}: ${prezzoFinale}€ < ${MIN_PRICE_THRESHOLD}€ (MSY: ${prezzoMSY}€)`);
+        log(`[${i}] 🚫 FILTRATO PREZZO SKU ${sku}: ${prezzoFinale}€ < ${MIN_PRICE_THRESHOLD}€ (MSY: ${prezzoMSY}€)`, 'info');
         continue;
       }
 
@@ -195,7 +198,7 @@ async function syncMSYtoEcwid() {
       if (REQUIRE_IMAGES && validImages.length === 0) {
         countIgnored++;
         countFilteredImages++;
-        log(`[${i}] 🖼️ FILTRATO IMMAGINI SKU ${sku}: nessuna immagine valida trovata`);
+        log(`[${i}] 🖼️ FILTRATO IMMAGINI SKU ${sku}: nessuna immagine valida trovata`, 'info');
         continue;
       }
 
@@ -206,7 +209,7 @@ async function syncMSYtoEcwid() {
         found = searchRes && Array.isArray(searchRes.items) && searchRes.items[0];
       } catch (err) {
         countError++;
-        log(`[${i}] ❌ Errore Ecwid search SKU ${sku}:`, err.message);
+        log(`[${i}] ❌ Errore Ecwid search SKU ${sku}: ${err.message}`, 'error');
         errorSKUs.push({ sku, step: 'search', error: err.message || err });
         continue;
       }
@@ -255,12 +258,12 @@ async function syncMSYtoEcwid() {
           });
           if (ecwidResp && ecwidResp.errorCode) {
             countError++;
-            log(`[${i}] ❌ ERRORE Ecwid update SKU ${sku}:`, ecwidResp.errorCode, ecwidResp.errorMessage);
+            log(`[${i}] ❌ ERRORE Ecwid update SKU ${sku}: ${ecwidResp.errorCode} - ${ecwidResp.errorMessage}`, 'error');
             errorSKUs.push({ sku, step: 'update', error: `${ecwidResp.errorCode} - ${ecwidResp.errorMessage}` });
             continue;
           }
           countUpdated++;
-          log(`[${i}] ✅ ${sku}: Aggiornato su Ecwid (${found.id}) - Prezzo: ${prezzoFinale}€, Immagini: ${validImages.length}`);
+          log(`[${i}] ✅ ${sku}: Aggiornato su Ecwid (${found.id}) - Prezzo: ${prezzoFinale}€, Immagini: ${validImages.length}`, 'info');
         } else {
           // CREATE NUOVO PRODOTTO
           ecwidResp = await ecwidFetch(`products`, {
@@ -269,16 +272,16 @@ async function syncMSYtoEcwid() {
           });
           if (ecwidResp && ecwidResp.errorCode) {
             countError++;
-            log(`[${i}] ❌ ERRORE Ecwid create SKU ${sku}:`, ecwidResp.errorCode, ecwidResp.errorMessage);
+            log(`[${i}] ❌ ERRORE Ecwid create SKU ${sku}: ${ecwidResp.errorCode} - ${ecwidResp.errorMessage}`, 'error');
             errorSKUs.push({ sku, step: 'create', error: `${ecwidResp.errorCode} - ${ecwidResp.errorMessage}` });
             continue;
           }
           countCreated++;
-          log(`[${i}] ✅ ${sku}: Creato su Ecwid - Prezzo: ${prezzoFinale}€, Immagini: ${validImages.length}`);
+          log(`[${i}] ✅ ${sku}: Creato su Ecwid - Prezzo: ${prezzoFinale}€, Immagini: ${validImages.length}`, 'info');
         }
       } catch (err) {
         countError++;
-        log(`[${i}] ❌ ERRORE Ecwid upsert SKU ${sku}:`, err.message || err);
+        log(`[${i}] ❌ ERRORE Ecwid upsert SKU ${sku}: ${err.message || err}`, 'error');
         errorSKUs.push({ sku, step: 'upsert', error: err.message || err });
       }
 
@@ -289,27 +292,27 @@ async function syncMSYtoEcwid() {
 
       // ✅ PROGRESS LOG
       if (i % 10 === 0) {
-        log(`📊 Progresso: ${i}/${listino.price_list.length} - Sync: ${countCreated + countUpdated}, Filtrati: ${countFilteredPrice + countFilteredImages}`);
+        log(`📊 Progresso: ${i}/${listino.price_list.length} - Sync: ${countCreated + countUpdated}, Filtrati: ${countFilteredPrice + countFilteredImages}`, 'info');
       }
     }
 
     // ✅ REPORT FINALE DETTAGLIATO
     if (errorSKUs.length > 0) {
-      log('⚠️ === ERRORI RISCONTRATI DURANTE LA SYNC ===');
-      errorSKUs.slice(0, 10).forEach(e => log(`SKU ${e.sku} [${e.step}]: ${e.error}`));
+      log('⚠️ === ERRORI RISCONTRATI DURANTE LA SYNC ===', 'warn');
+      errorSKUs.slice(0, 10).forEach(e => log(`SKU ${e.sku} [${e.step}]: ${e.error}`, 'warn'));
       if (errorSKUs.length > 10) {
-        log(`... e altri ${errorSKUs.length - 10} errori`);
+        log(`... e altri ${errorSKUs.length - 10} errori`, 'warn');
       }
     }
 
-    log(`🏁 === SYNC COMPLETATA ===`);
-    log(`✅ Creati: ${countCreated}`);
-    log(`🔄 Aggiornati: ${countUpdated}`);
-    log(`⏭️ Ignorati totali: ${countIgnored}`);
-    log(`  └── 💰 Filtrati per prezzo < ${MIN_PRICE_THRESHOLD}€: ${countFilteredPrice}`);
-    log(`  └── 🖼️ Filtrati per mancanza immagini: ${countFilteredImages}`);
-    log(`❌ Errori: ${countError}`);
-    log(`📊 Tasso successo: ${((countCreated + countUpdated) / listino.price_list.length * 100).toFixed(1)}%`);
+    log(`🏁 === SYNC COMPLETATA ===`, 'info');
+    log(`✅ Creati: ${countCreated}`, 'info');
+    log(`🔄 Aggiornati: ${countUpdated}`, 'info');
+    log(`⏭️ Ignorati totali: ${countIgnored}`, 'info');
+    log(`  └── 💰 Filtrati per prezzo < ${MIN_PRICE_THRESHOLD}€: ${countFilteredPrice}`, 'info');
+    log(`  └── 🖼️ Filtrati per mancanza immagini: ${countFilteredImages}`, 'info');
+    log(`❌ Errori: ${countError}`, 'info');
+    log(`📊 Tasso successo: ${((countCreated + countUpdated) / listino.price_list.length * 100).toFixed(1)}%`, 'info');
 
     const result = { 
       success: true,
@@ -333,7 +336,7 @@ async function syncMSYtoEcwid() {
     return result;
 
   } catch (error) {
-    log('💥 Errore durante sync:', error.message);
+    log('💥 Errore durante sync: ' + error.message, 'error');
     
     // ✅ AGGIORNA STATO ERRORE
     syncStatus.running = false;
@@ -357,7 +360,7 @@ app.post('/v1/ecwid-sync', async (req, res) => {
       });
     }
 
-    log(`🔄 Avviato sync asincrono da ${req.ip}`);
+    log(`🔄 Avviato sync asincrono da ${req.ip}`, 'info');
 
     // ✅ RISPOSTA IMMEDIATA
     res.status(202).json({
@@ -374,15 +377,15 @@ app.post('/v1/ecwid-sync', async (req, res) => {
     setImmediate(() => {
       syncMSYtoEcwid()
         .then(result => {
-          log('✅ Background sync completato:', result);
+          log('✅ Background sync completato: ' + JSON.stringify(result), 'info');
         })
         .catch(error => {
-          log('❌ Background sync fallito:', error.message);
+          log('❌ Background sync fallito: ' + error.message, 'error');
         });
     });
 
   } catch (err) {
-    log('💥 Errore in /v1/ecwid-sync:', err.message || err);
+    log('💥 Errore in /v1/ecwid-sync: ' + (err.message || err), 'error');
     res.status(500).json({ 
       success: false, 
       error: err.message,
@@ -434,23 +437,23 @@ app.get('/v1/start-sync', async (req, res) => {
   
   // Avvia dopo 3 secondi
   setTimeout(() => {
-    log('🤖 Avvio sync automatico...');
+    log('🤖 Avvio sync automatico...', 'info');
     syncMSYtoEcwid()
-      .then(result => log('✅ Auto-sync completato:', result))
-      .catch(error => log('❌ Auto-sync fallito:', error.message));
+      .then(result => log('✅ Auto-sync completato: ' + JSON.stringify(result), 'info'))
+      .catch(error => log('❌ Auto-sync fallito: ' + error.message, 'error'));
   }, 3000);
 });
 
 const PORT = process.env.PORT || 9000;
 app.listen(PORT, () => {
-  log(`🚀 Server in ascolto sulla porta ${PORT}`);
-  log(`💰 Filtro prezzo attivo: min ${MIN_PRICE_THRESHOLD}€ (moltiplicatore: x${PRICE_MULTIPLIER})`);
-  log(`🖼️ Validazione immagini: ${REQUIRE_IMAGES ? 'OBBLIGATORIA' : 'OPZIONALE'}`);
-  log(`📡 Endpoints disponibili:`);
-  log(`  - POST /v1/ecwid-sync (sync asincrono)`);
-  log(`  - GET  /v1/sync-status (stato sync)`);
-  log(`  - GET  /v1/config (configurazione)`);
-  log(`  - GET  /v1/start-sync (avvio automatico)`);
+  log(`🚀 Server in ascolto sulla porta ${PORT}`, 'info');
+  log(`💰 Filtro prezzo attivo: min ${MIN_PRICE_THRESHOLD}€ (moltiplicatore: x${PRICE_MULTIPLIER})`, 'info');
+  log(`🖼️ Validazione immagini: ${REQUIRE_IMAGES ? 'OBBLIGATORIA' : 'OPZIONALE'}`, 'info');
+  log(`📡 Endpoints disponibili:`, 'info');
+  log(`  - POST /v1/ecwid-sync (sync asincrono)`, 'info');
+  log(`  - GET  /v1/sync-status (stato sync)`, 'info');
+  log(`  - GET  /v1/config (configurazione)`, 'info');
+  log(`  - GET  /v1/start-sync (avvio automatico)`, 'info');
 });
 
 // === CORRETTA: NON mettere altro dopo questa riga ===
