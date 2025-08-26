@@ -25,7 +25,7 @@ const app = express();
 
 app.use(express.json());
 
-// ----- HEALTHCHECK: PER RAILWAY -----
+// ----- HEALTHCHECK -----
 app.get('/health', (req, res) => {
     res.status(200).json({ status: 'ok' });
 });
@@ -35,13 +35,13 @@ const ECWID_STORE_ID = process.env.ECWID_STORE_ID || "29517085";
 const ECWID_TOKEN = process.env.ECWID_SECRET_TOKEN;
 const MSY_URL = 'https://msy.madtec.be/price_list/pricelist_en.json';
 
-// ✅ CONFIGURAZIONI FILTRO PREZZO
+// ✅ CONFIGURAZIONI
 const PRICE_MULTIPLIER = 2;
 const MIN_PRICE_THRESHOLD = 40;
 const ENABLE_PRICE_FILTER = true;
 const REQUIRE_IMAGES = true;
 
-// ✅ STATO GLOBALE DEL SYNC
+// ✅ STATO GLOBALE SYNC
 let syncStatus = {
     running: false,
     lastRun: null,
@@ -49,7 +49,7 @@ let syncStatus = {
     progress: null
 };
 
-// ====== 🔧 FIX #1: MAPPA CATEGORIE CORRETTA ======
+// ✅ MAPPA CATEGORIE ECWID (CORRETTA)
 const mappaCategorieEcwid = {
     "PRE-ORDER": 176669407,
     "FITNESS": 185397803,
@@ -63,15 +63,14 @@ const mappaCategorieEcwid = {
     "Beauty & Wellness": 185397799,
     "Home and Living": 185397798,
     "Appliances": 185397544,
-    // 🔧 Aggiungi mapping MSY specifici
     "Computer": 185397544,
     "Notebook": 185397545,
     "Monitor": 185397546,
     "Accessori": 185397800,
-    "default": 176669407 // Fallback PRE-ORDER
+    "default": 176669407
 };
 
-// ✅ 🔧 FIX #2: VALIDAZIONE IMMAGINI ROBUSTA
+// ✅ VALIDAZIONE IMMAGINI ROBUSTA
 async function validateImageUrl(url) {
     if (!url || typeof url !== 'string' || !url.startsWith('http')) {
         return false;
@@ -107,7 +106,7 @@ async function validateImageUrl(url) {
     }
 }
 
-// ----- ECWID FETCH HELPER CON RETRY -----
+// ✅ ECWID FETCH CON RETRY
 async function ecwidFetch(endpoint, options = {}) {
     const url = `https://app.ecwid.com/api/v3/${ECWID_STORE_ID}/${endpoint}`;
     const headers = {
@@ -148,9 +147,9 @@ async function ecwidFetch(endpoint, options = {}) {
     }
 }
 
-// ------ 🔧 FIX #3: FUNZIONE SYNC CORRETTA ------
+// ✅ FUNZIONE SYNC PRINCIPALE CORRETTA
 async function syncMSYtoEcwid() {
-    log('🚀 Inizio sync MSY→Ecwid con filtri corretti...', 'info');
+    log('🚀 Inizio sync MSY→Ecwid con API corretta...', 'info');
 
     syncStatus.running = true;
     syncStatus.lastRun = new Date().toISOString();
@@ -180,7 +179,7 @@ async function syncMSYtoEcwid() {
                 continue;
             }
 
-            // ✅ FILTRO PREZZO MINIMO
+            // ✅ FILTRO PREZZO
             const prezzoMSY = Number(prodotto.price) || 0;
             const prezzoFinale = prezzoMSY * PRICE_MULTIPLIER;
 
@@ -191,7 +190,7 @@ async function syncMSYtoEcwid() {
                 continue;
             }
 
-            // ✅ 🔧 FIX #3: VALIDAZIONE IMMAGINI RIGIDA
+            // ✅ VALIDAZIONE IMMAGINI
             const imageUrls = ['photo_1','photo_2','photo_3','photo_4','photo_5']
                 .map(c => prodotto[c])
                 .filter(url => url && typeof url === "string" && url.startsWith("http"));
@@ -199,22 +198,21 @@ async function syncMSYtoEcwid() {
             let validImages = [];
             
             if (imageUrls.length > 0) {
-                // Valida solo prime 2 immagini per velocità
                 const imagesToValidate = imageUrls.slice(0, 2);
                 for (const url of imagesToValidate) {
                     const isValid = await validateImageUrl(url);
                     if (isValid) {
-                        validImages.push({ url });
+                        validImages.push(url);
                     }
                 }
             }
 
-            // 🔧 FIX #3: SE REQUIRE_IMAGES=true E NON CI SONO IMMAGINI → SKIP TOTALE
+            // ✅ FILTRO IMMAGINI RIGIDO
             if (REQUIRE_IMAGES && validImages.length === 0) {
                 countIgnored++;
                 countFilteredImages++;
                 log(`[${i}] 🖼️ FILTRATO IMMAGINI SKU ${sku}: nessuna immagine valida`, 'info');
-                continue; // ✅ SKIP COMPLETO DEL PRODOTTO
+                continue;
             }
 
             // ✅ RICERCA PRODOTTO ESISTENTE
@@ -228,19 +226,18 @@ async function syncMSYtoEcwid() {
                 continue;
             }
 
-            // ✅ 🔧 FIX #1: CATEGORIZZAZIONE INTELLIGENTE
-            let idCategoriaEcwid = mappaCategorieEcwid["default"]; // PRE-ORDER fallback
+            // ✅ CATEGORIZZAZIONE
+            let idCategoriaEcwid = mappaCategorieEcwid["default"];
             
-            // Prova mapping per categoria MSY
             if (prodotto.cat && typeof prodotto.cat === 'string') {
                 const catMapped = mappaCategorieEcwid[prodotto.cat.trim()];
                 if (catMapped) {
                     idCategoriaEcwid = catMapped;
-                    log(`[${i}] 📁 Categoria mappata: "${prodotto.cat}" → ${catMapped}`, 'info');
+                    log(`[${i}] 📁 Categoria: "${prodotto.cat}" → ${catMapped}`, 'info');
                 }
             }
 
-            // ✅ 🔧 FIX #2: COSTRUZIONE PRODOTTO SENZA HOMEPAGE
+            // ✅ PAYLOAD ECWID API CORRETTO
             const ecwidProd = {
                 sku,
                 name: prodotto.name || sku,
@@ -248,25 +245,20 @@ async function syncMSYtoEcwid() {
                 compareToPrice: prezzoFinale * 1.2,
                 quantity: prodotto.stock != null ? Number(prodotto.stock) : 0,
                 weight: prodotto.weight ? Number(prodotto.weight) : undefined,
-                description: prodotto.description,
+                description: prodotto.description || "",
                 enabled: true,
-                // 🔧 FIX #2: IMPEDISCI HOMEPAGE/FEATURED
-                isFeatured: false,
-                showOnFrontpage: false,
-                // ✅ SOLO IMMAGINI VALIDATE
-                images: validImages,
-                brand: prodotto.brand,
-                // 🔧 FIX #1: CATEGORIA SPECIFICA, NON PRE-ORDER GENERICO
-                categories: [idCategoriaEcwid],
-                attributes: [
-                    { name: 'MSY Price', value: String(prezzoMSY) + '€' },
-                    { name: 'Category', value: prodotto.cat || "" },
-                    { name: 'Subcategory', value: prodotto.scat || "" },
-                    { name: 'EAN', value: prodotto.ean || "" }
-                ]
+                // ✅ FIX: Gallery formato corretto
+                ...(validImages.length > 0 && {
+                    gallery: validImages.map(url => ({
+                        url: url,
+                        alt: prodotto.name || ""
+                    }))
+                }),
+                // ✅ FIX: categoryIds formato corretto
+                categoryIds: [idCategoriaEcwid]
             };
 
-            // ✅ UPSERT SU ECWID
+            // ✅ UPSERT ECWID
             try {
                 let ecwidResp;
                 if (found) {
@@ -283,7 +275,7 @@ async function syncMSYtoEcwid() {
                     }
                     
                     countUpdated++;
-                    log(`[${i}] ✅ ${sku}: AGGIORNATO - Prezzo: ${prezzoFinale}€, Cat: ${idCategoriaEcwid}, Img: ${validImages.length}`, 'info');
+                    log(`[${i}] ✅ ${sku}: AGGIORNATO - €${prezzoFinale}, Cat:${idCategoriaEcwid}, Img:${validImages.length}`, 'info');
                 } else {
                     // CREATE
                     ecwidResp = await ecwidFetch(`products`, {
@@ -298,7 +290,7 @@ async function syncMSYtoEcwid() {
                     }
                     
                     countCreated++;
-                    log(`[${i}] ✅ ${sku}: CREATO - Prezzo: ${prezzoFinale}€, Cat: ${idCategoriaEcwid}, Img: ${validImages.length}`, 'info');
+                    log(`[${i}] ✅ ${sku}: CREATO - €${prezzoFinale}, Cat:${idCategoriaEcwid}, Img:${validImages.length}`, 'info');
                 }
             } catch (err) {
                 countError++;
@@ -312,7 +304,7 @@ async function syncMSYtoEcwid() {
 
             // Progress log
             if (i % 20 === 0) {
-                log(`📊 ${i}/${listino.price_list.length} - Creati: ${countCreated}, Aggiornati: ${countUpdated}, Filtrati: ${countFilteredPrice + countFilteredImages}`, 'info');
+                log(`📊 ${i}/${listino.price_list.length} - Creati:${countCreated}, Aggiornati:${countUpdated}, Filtrati:${countFilteredPrice + countFilteredImages}`, 'info');
             }
         }
 
@@ -321,8 +313,8 @@ async function syncMSYtoEcwid() {
         log(`✅ Creati: ${countCreated}`, 'info');
         log(`🔄 Aggiornati: ${countUpdated}`, 'info');
         log(`⏭️ Ignorati: ${countIgnored}`, 'info');
-        log(`💰 Filtrati prezzo < ${MIN_PRICE_THRESHOLD}€: ${countFilteredPrice}`, 'info');
-        log(`🖼️ Filtrati senza immagini: ${countFilteredImages}`, 'info');
+        log(`💰 Filtrati prezzo: ${countFilteredPrice}`, 'info');
+        log(`🖼️ Filtrati immagini: ${countFilteredImages}`, 'info');
         log(`❌ Errori: ${countError}`, 'info');
 
         const result = {
@@ -356,7 +348,7 @@ async function syncMSYtoEcwid() {
 
 // ===== ROUTES =====
 
-// 🔧 SYNC ASINCRONO
+// ✅ SYNC ASINCRONO
 app.post('/v1/ecwid-sync', async (req, res) => {
     try {
         if (syncStatus.running) {
@@ -380,7 +372,6 @@ app.post('/v1/ecwid-sync', async (req, res) => {
             timestamp: new Date().toISOString()
         });
 
-        // Avvia in background
         setImmediate(() => {
             syncMSYtoEcwid()
                 .then(result => log('✅ Background sync OK: ' + JSON.stringify(result), 'info'))
@@ -447,10 +438,11 @@ app.get('/v1/start-sync', async (req, res) => {
 
 const PORT = process.env.PORT || 9000;
 app.listen(PORT, () => {
-    log(`🚀 Server MSY-Ecwid Sync v2.0 porta ${PORT}`, 'info');
+    log(`🚀 MSY-Ecwid Sync v3.0 FIXED porta ${PORT}`, 'info');
     log(`💰 Filtro prezzo: min ${MIN_PRICE_THRESHOLD}€ (x${PRICE_MULTIPLIER})`, 'info');
     log(`🖼️ Validazione immagini: ${REQUIRE_IMAGES ? 'OBBLIGATORIA' : 'OPZIONALE'}`, 'info');
     log(`📡 Endpoints: /v1/ecwid-sync, /v1/sync-status, /v1/config`, 'info');
+    log(`🔧 FIX APPLICATI: API Payload, Gallery, CategoryIds`, 'info');
 });
 
 module.exports = { syncMSYtoEcwid };
