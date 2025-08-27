@@ -1,6 +1,4 @@
 const axios = require('axios');
-const fs = require('fs');
-const path = require('path');
 
 // CONFIGURAZIONI RIGIDE - TUTTE LE CORREZIONI APPLICATE
 const CONFIG = {
@@ -8,8 +6,8 @@ const CONFIG = {
     ECWID_STORE_ID: process.env.ECWID_STORE_ID,
     ECWID_TOKEN: process.env.ECWID_TOKEN,
     PRICE_MULTIPLIER: 2,           // RADDOPPIA SEMPRE I PREZZI MSY
-    MIN_PRICE_THRESHOLD: 40,       // 40€ SOGLIA MINIMA DOPO RADDOPPIO
-    REQUIRE_IMAGES: true,          // IMMAGINI OBBLIGATORIE - NO PRODOTTI SENZA FOTO
+    MIN_PRICE_THRESHOLD: 20,       // 20€ SOGLIA MINIMA DOPO RADDOPPIO (CORRETTO da 40€)
+    REQUIRE_IMAGES: false,         // IMMAGINI OPZIONALI (CORRETTO da true)
     MAX_RETRIES: 3,
     BATCH_SIZE: 10,
     DELAY_MS: 1000
@@ -121,7 +119,7 @@ class MSYEcwidSync {
             };
         }
 
-        // 3. CONTROLLO SOGLIA MINIMA 40€ (DOPO RADDOPPIO!)
+        // 3. CONTROLLO SOGLIA MINIMA 20€ (DOPO RADDOPPIO!)
         if (finalPrice < CONFIG.MIN_PRICE_THRESHOLD) {
             this.stats.reasons.lowPrice++;
             return { 
@@ -234,7 +232,7 @@ class MSYEcwidSync {
                     console.log(`✅ IMPORTATO: ${payload.name}`);
                     console.log(`   💰 MSY: €${payload.originalPrice || 'N/A'} → Ecwid: €${payload.price}`);
                     console.log(`   📁 Categoria: ${payload.categoryIds[0]}`);
-                    console.log(`   🖼️  Immagini: ${payload.media?.images?.length || 0}`);
+                    console.log(`   🖼️ Immagini: ${payload.media?.images?.length || 0}`);
                     console.log(`   🏠 Featured: NO (anti-homepage attivo)`);
                     return { success: true, data: response.data };
                 }
@@ -276,19 +274,16 @@ class MSYEcwidSync {
             });
 
             if (!response.data) {
-    throw new Error('Nessun dato ricevuto da MSY');
-}
+                throw new Error('Nessun dato ricevuto da MSY');
+            }
 
-// MSY restituisce { "price_list": [...] }
-if (response.data.price_list && Array.isArray(response.data.price_list)) {
-    console.log(`✅ Recuperati ${response.data.price_list.length} prodotti da MSY API`);
-    return response.data.price_list;
-} else {
-    throw new Error(`Formato dati MSY non valido. Ricevuto: ${JSON.stringify(response.data).substring(0, 200)}...`);
-}
-
-            console.log(`✅ Recuperati ${response.data.length} prodotti da MSY API`);
-            return response.data;
+            // MSY restituisce { "price_list": [...] }
+            if (response.data.price_list && Array.isArray(response.data.price_list)) {
+                console.log(`✅ Recuperati ${response.data.price_list.length} prodotti da MSY API`);
+                return response.data.price_list;
+            } else {
+                throw new Error(`Formato dati MSY non valido. Ricevuto: ${JSON.stringify(response.data).substring(0, 200)}...`);
+            }
 
         } catch (error) {
             console.error('❌ Errore connessione MSY API:', error.message);
@@ -304,12 +299,12 @@ if (response.data.price_list && Array.isArray(response.data.price_list)) {
     async sync() {
         console.log('\n🚀 ═══════════════════════════════════════════════');
         console.log('   SYNC MSY → ECWID - VERSIONE DEFINITIVA');
-        console.log('   TUTTI GLI ERRORI CORRETTI');
+        console.log('   FILTRI ALLENTATI PER PIÙ PRODOTTI');
         console.log('═══════════════════════════════════════════════');
         console.log('📋 Configurazioni attive:');
         console.log(`   💰 Raddoppio prezzi: x${CONFIG.PRICE_MULTIPLIER} (SEMPRE APPLICATO)`);
-        console.log(`   ⚖️  Soglia minima: €${CONFIG.MIN_PRICE_THRESHOLD} (dopo raddoppio)`);
-        console.log(`   🖼️  Immagini: ${CONFIG.REQUIRE_IMAGES ? 'OBBLIGATORIE' : 'OPZIONALI'}`);
+        console.log(`   ⚖️ Soglia minima: €${CONFIG.MIN_PRICE_THRESHOLD} (dopo raddoppio) - ALLENTATA`);
+        console.log(`   🖼️ Immagini: ${CONFIG.REQUIRE_IMAGES ? 'OBBLIGATORIE' : 'OPZIONALI'} - ALLENTATA`);
         console.log(`   🏠 Featured homepage: DISABILITATO (anti-homepage)`);
         console.log(`   📁 Categoria principale: ${CATEGORY_MAPPING.default} (pre-order)`);
         console.log('═══════════════════════════════════════════════\n');
@@ -320,23 +315,24 @@ if (response.data.price_list && Array.isArray(response.data.price_list)) {
             // 1. RECUPERO PRODOTTI MSY
             const msyProducts = await this.fetchMSYProducts();
 
-            // 2. PROCESSAMENTO CON TUTTE LE CORREZIONI
+            // 2. PROCESSAMENTO CON TUTTE LE CORREZIONI + DEBUG
             for (let i = 0; i < msyProducts.length; i++) {
                 const product = msyProducts[i];
                 this.stats.processed++;
 
-                // console.log(`\n🔄 [${i+1}/${msyProducts.length}] "${product.name || 'Senza nome'}"`);
-                // console.log(`   🏷️  Categoria MSY: "${product.category || 'N/A'}"`);
-                // console.log(`   💰 Prezzo MSY: €${product.price || 'N/A'}`);
-                // console.log(`   🖼️  Immagini disponibili: ${product.images?.length || 0}`);
+                // DEBUG: Log ogni prodotto per vedere cosa succede
+                console.log(`\n🔄 [${i+1}/${msyProducts.length}] "${product.name || 'Senza nome'}"`);
+                console.log(`   🏷️ Categoria MSY: "${product.category || 'N/A'}"`);
+                console.log(`   💰 Prezzo MSY: €${product.price || 'N/A'}`);
+                console.log(`   🖼️ Immagini disponibili: ${product.images?.length || 0}`);
 
                 // 3. VALIDAZIONE SUPER RIGIDA
                 const validation = this.validateProduct(product);
                 
                 if (!validation.valid) {
                     this.stats.skipped++;
-                   // console.log(`   ⏭️  SALTATO: ${validation.reason}`);
-                   // console.log(`   📝 ${validation.detail}`);
+                    console.log(`   ⏭️ SALTATO: ${validation.reason}`);
+                    console.log(`   📝 ${validation.detail}`);
                     continue;
                 }
 
@@ -358,6 +354,12 @@ if (response.data.price_list && Array.isArray(response.data.price_list)) {
                 if (i < msyProducts.length - 1) {
                     await new Promise(resolve => setTimeout(resolve, CONFIG.DELAY_MS));
                 }
+
+                // STOP DOPO 50 PRODOTTI PER TEST
+                if (i >= 49) {
+                    console.log('\n🛑 STOP AFTER 50 PRODUCTS FOR TESTING');
+                    break;
+                }
             }
 
         } catch (error) {
@@ -376,15 +378,15 @@ if (response.data.price_list && Array.isArray(response.data.price_list)) {
         console.log('\n📊 ═══════════════════════════════════════════════');
         console.log('   REPORT FINALE SYNC MSY → ECWID');
         console.log('═══════════════════════════════════════════════');
-        console.log(`⏱️  Durata totale: ${Math.floor(durationSeconds/60)}m ${durationSeconds%60}s`);
+        console.log(`⏱️ Durata totale: ${Math.floor(durationSeconds/60)}m ${durationSeconds%60}s`);
         console.log(`📦 Prodotti processati: ${this.stats.processed}`);
         console.log(`✅ Prodotti importati: ${this.stats.imported}`);
-        console.log(`⏭️  Prodotti saltati: ${this.stats.skipped}`);
+        console.log(`⏭️ Prodotti saltati: ${this.stats.skipped}`);
         console.log(`❌ Errori import: ${this.stats.errors}`);
         
         console.log('\n📋 DETTAGLIO ESCLUSIONI:');
-        console.log(`   🖼️  Senza immagini valide: ${this.stats.reasons.noImages}`);
-        console.log(`   💰 Prezzo < €40 (post-raddoppio): ${this.stats.reasons.lowPrice}`);
+        console.log(`   🖼️ Senza immagini valide: ${this.stats.reasons.noImages}`);
+        console.log(`   💰 Prezzo < €20 (post-raddoppio): ${this.stats.reasons.lowPrice}`);
         console.log(`   📝 Dati prodotto non validi: ${this.stats.reasons.invalidData}`);
         console.log(`   🔌 Errori API Ecwid: ${this.stats.reasons.apiError}`);
         
@@ -396,12 +398,12 @@ if (response.data.price_list && Array.isArray(response.data.price_list)) {
         
         console.log('\n🎉 ═══ CORREZIONI APPLICATE ═══');
         console.log('   ✅ Raddoppio prezzi: ATTIVO e FUNZIONANTE');
-        console.log('   ✅ Filtro €40+ post-raddoppio: ATTIVO');
-        console.log('   ✅ Immagini obbligatorie: ATTIVO');
+        console.log('   ✅ Filtro €20+ post-raddoppio: ATTIVO (ALLENTATO)');
+        console.log('   ✅ Immagini opzionali: ATTIVO (ALLENTATO)');
         console.log('   ✅ Anti-homepage: ATTIVO (zero featured)');
         console.log('   ✅ Categorizzazione: CORRETTA con ID reali');
         console.log('   ✅ Payload API: FORMATO CORRETTO');
-        console.log('\n🏁 SYNC COMPLETATO - TUTTI I PROBLEMI RISOLTI!');
+        console.log('\n🏁 SYNC COMPLETATO - FILTRI ALLENTATI PER PIÙ RISULTATI!');
         console.log('═══════════════════════════════════════════════');
     }
 }
@@ -461,12 +463,12 @@ module.exports = { MSYEcwidSync, SyncStatusAPI };
 if (require.main === module) {
     const sync = new MSYEcwidSync();
     
-    console.log('🎬 Avvio sync MSY → Ecwid...');
+    console.log('🎬 Avvio sync MSY → Ecwid con filtri allentati...');
     
     sync.sync()
         .then(() => {
             console.log('\n🏆 PROCESSO COMPLETATO CON SUCCESSO!');
-            console.log('💫 Tutti gli errori sono stati corretti');
+            console.log('💫 Filtri allentati per più prodotti importati');
             process.exit(0);
         })
         .catch(error => {
@@ -526,8 +528,8 @@ app.post('/v1/start-sync', async (req, res) => {
     }
 
     res.status(200).json({
-        message: 'Sync avviato in background',
-        estimatedDuration: '10-15 minuti',
+        message: 'Sync avviato in background con filtri allentati',
+        estimatedDuration: '5-10 minuti',
         checkStatusAt: '/v1/sync-status'
     });
 
@@ -553,8 +555,8 @@ const PORT = process.env.PORT || 9000;
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`🚀 MSY-Ecwid Sync Server v2.0 avviato sulla porta ${PORT}`);
     console.log(`💰 Raddoppio prezzi: x${CONFIG.PRICE_MULTIPLIER}`);
-    console.log(`⚖️ Soglia minima: €${CONFIG.MIN_PRICE_THRESHOLD}`);
-    console.log(`🖼️ Immagini obbligatorie: ${CONFIG.REQUIRE_IMAGES}`);
+    console.log(`⚖️ Soglia minima: €${CONFIG.MIN_PRICE_THRESHOLD} (ALLENTATA)`);
+    console.log(`🖼️ Immagini obbligatorie: ${CONFIG.REQUIRE_IMAGES} (ALLENTATA)`);
     console.log(`📡 Endpoints disponibili:`);
     console.log(`   GET  /health - Healthcheck`);
     console.log(`   GET  /v1/sync-status - Status sync`);
