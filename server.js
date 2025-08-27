@@ -275,9 +275,17 @@ class MSYEcwidSync {
                 }
             });
 
-            if (!response.data || !Array.isArray(response.data)) {
-                throw new Error('Formato dati MSY non valido - array di prodotti atteso');
-            }
+            if (!response.data) {
+    throw new Error('Nessun dato ricevuto da MSY');
+}
+
+// MSY restituisce { "price_list": [...] }
+if (response.data.price_list && Array.isArray(response.data.price_list)) {
+    console.log(`✅ Recuperati ${response.data.price_list.length} prodotti da MSY API`);
+    return response.data.price_list;
+} else {
+    throw new Error(`Formato dati MSY non valido. Ricevuto: ${JSON.stringify(response.data).substring(0, 200)}...`);
+}
 
             console.log(`✅ Recuperati ${response.data.length} prodotti da MSY API`);
             return response.data;
