@@ -325,18 +325,18 @@ if (response.data.price_list && Array.isArray(response.data.price_list)) {
                 const product = msyProducts[i];
                 this.stats.processed++;
 
-                console.log(`\n🔄 [${i+1}/${msyProducts.length}] "${product.name || 'Senza nome'}"`);
-                console.log(`   🏷️  Categoria MSY: "${product.category || 'N/A'}"`);
-                console.log(`   💰 Prezzo MSY: €${product.price || 'N/A'}`);
-                console.log(`   🖼️  Immagini disponibili: ${product.images?.length || 0}`);
+                // console.log(`\n🔄 [${i+1}/${msyProducts.length}] "${product.name || 'Senza nome'}"`);
+                // console.log(`   🏷️  Categoria MSY: "${product.category || 'N/A'}"`);
+                // console.log(`   💰 Prezzo MSY: €${product.price || 'N/A'}`);
+                // console.log(`   🖼️  Immagini disponibili: ${product.images?.length || 0}`);
 
                 // 3. VALIDAZIONE SUPER RIGIDA
                 const validation = this.validateProduct(product);
                 
                 if (!validation.valid) {
                     this.stats.skipped++;
-                    console.log(`   ⏭️  SALTATO: ${validation.reason}`);
-                    console.log(`   📝 ${validation.detail}`);
+                   // console.log(`   ⏭️  SALTATO: ${validation.reason}`);
+                   // console.log(`   📝 ${validation.detail}`);
                     continue;
                 }
 
