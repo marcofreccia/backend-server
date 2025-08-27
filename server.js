@@ -468,3 +468,87 @@ if (require.main === module) {
             process.exit(1);
         });
 }
+
+// ===== SERVER EXPRESS PER RAILWAY =====
+const express = require('express');
+const app = express();
+
+app.use(express.json());
+
+// ENDPOINT HEALTHCHECK OBBLIGATORIO
+app.get('/health', (req, res) => {
+    res.status(200).json({ 
+        status: 'ok',
+        timestamp: new Date().toISOString(),
+        version: '2.0'
+    });
+});
+
+// ENDPOINT STATUS SYNC
+let globalSync = null;
+let globalStatus = null;
+
+app.get('/v1/sync-status', (req, res) => {
+    res.status(200).json({
+        running: globalStatus?.isRunning || false,
+        lastRun: globalStatus?.startTime || null,
+        result: globalStatus?.isRunning ? null : 'completed',
+        progress: {
+            current: globalSync?.stats?.processed || 0,
+            total: 0,
+            phase: globalStatus?.isRunning ? 'processing' : 'idle'
+        },
+        serverTime: new Date().toISOString(),
+        config: {
+            priceMultiplier: CONFIG.PRICE_MULTIPLIER,
+            minPriceThreshold: CONFIG.MIN_PRICE_THRESHOLD,
+            enablePriceFilter: true,
+            requireImages: CONFIG.REQUIRE_IMAGES
+        }
+    });
+});
+
+// ENDPOINT AVVIO SYNC
+app.post('/v1/start-sync', async (req, res) => {
+    if (globalStatus?.isRunning) {
+        return res.status(409).json({
+            message: 'Sync già in corso',
+            checkStatusAt: '/v1/sync-status'
+        });
+    }
+
+    res.status(200).json({
+        message: 'Sync avviato in background',
+        estimatedDuration: '10-15 minuti',
+        checkStatusAt: '/v1/sync-status'
+    });
+
+    // Avvio sync in background
+    setTimeout(async () => {
+        try {
+            globalSync = new MSYEcwidSync();
+            globalStatus = { isRunning: true, startTime: new Date().toISOString() };
+            
+            await globalSync.sync();
+            
+            globalStatus.isRunning = false;
+            console.log('✅ Background sync completato');
+        } catch (error) {
+            globalStatus.isRunning = false;
+            console.error('❌ Background sync fallito:', error.message);
+        }
+    }, 1000);
+});
+
+// AVVIO SERVER
+const PORT = process.env.PORT || 9000;
+app.listen(PORT, '0.0.0.0', () => {
+    console.log(`🚀 MSY-Ecwid Sync Server v2.0 avviato sulla porta ${PORT}`);
+    console.log(`💰 Raddoppio prezzi: x${CONFIG.PRICE_MULTIPLIER}`);
+    console.log(`⚖️ Soglia minima: €${CONFIG.MIN_PRICE_THRESHOLD}`);
+    console.log(`🖼️ Immagini obbligatorie: ${CONFIG.REQUIRE_IMAGES}`);
+    console.log(`📡 Endpoints disponibili:`);
+    console.log(`   GET  /health - Healthcheck`);
+    console.log(`   GET  /v1/sync-status - Status sync`);
+    console.log(`   POST /v1/start-sync - Avvia sync`);
+});
