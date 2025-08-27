@@ -4,7 +4,7 @@ const path = require('path');
 
 // CONFIGURAZIONI RIGIDE - TUTTE LE CORREZIONI APPLICATE
 const CONFIG = {
-    MSY_BASE_URL: 'https://msy.it/api',
+    MSY_BASE_URL: 'https://msy.madtec.be/price_list/pricelist_en.json',
     ECWID_STORE_ID: process.env.ECWID_STORE_ID,
     ECWID_TOKEN: process.env.ECWID_TOKEN,
     PRICE_MULTIPLIER: 2,           // RADDOPPIA SEMPRE I PREZZI MSY
@@ -267,7 +267,7 @@ class MSYEcwidSync {
     async fetchMSYProducts() {
         try {
             console.log('🔍 Connessione API MSY in corso...');
-            const response = await axios.get(`${CONFIG.MSY_BASE_URL}/products`, {
+            const response = await axios.get(CONFIG.MSY_BASE_URL, {
                 timeout: 30000,
                 headers: {
                     'Accept': 'application/json',
