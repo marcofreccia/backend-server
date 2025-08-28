@@ -1,7 +1,7 @@
 {
   "name": "msy-ecwid-hybrid-sync",
   "version": "1.0.0",
-  "description": "Hybrid MSY to Ecwid product synchronization with CSV and JSON support",
+  "description": "Hybrid MSY to Ecwid product synchronization",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
@@ -13,13 +13,10 @@
     "node-cron": "^3.0.2",
     "papaparse": "^5.4.1"
   },
-  "devDependencies": {
-    "nodemon": "^3.0.1"
-  },
   "engines": {
     "node": ">=16.0.0"
   },
-  "keywords": ["ecwid", "msy", "sync", "csv", "json", "e-commerce"],
+  "keywords": ["ecwid", "msy", "sync"],
   "author": "Your Name",
   "license": "MIT"
 }
