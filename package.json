@@ -1,20 +1,25 @@
 {
-  "name": "backend-server",
-  "version": "2.0.0",
-  "description": "MSY to Ecwid Product Sync Service",
+  "name": "msy-ecwid-hybrid-sync",
+  "version": "1.0.0",
+  "description": "Hybrid MSY to Ecwid product synchronization with CSV and JSON support",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "node server.js"
+    "dev": "nodemon server.js"
   },
   "dependencies": {
-    "axios": "^1.6.0",
-    "express": "^4.18.2"
+    "express": "^4.18.2",
+    "node-fetch": "^2.6.7",
+    "node-cron": "^3.0.2",
+    "papaparse": "^5.4.1"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.1"
   },
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=16.0.0"
   },
-  "keywords": ["sync", "ecwid", "msy", "ecommerce"],
-  "author": "marcofreccia",
+  "keywords": ["ecwid", "msy", "sync", "csv", "json", "e-commerce"],
+  "author": "Your Name",
   "license": "MIT"
 }
