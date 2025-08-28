@@ -1,56 +1,37 @@
-         const axios = require('axios');
+   const express = require('express');
+const fetch = require('node-fetch');
+const cron = require('node-cron');
 
-// ===== CONFIGURAZIONI COMPLETE - TUTTE LE CORREZIONI APPLICATE =====
+const app = express();
+const PORT = process.env.PORT || 3000;
 
+// ===== CONFIGURAZIONE =====
 const CONFIG = {
-  MSY_BASE_URL: 'https://msy.madtec.be/price_list/pricelist_en.json',
-  ECWID_STORE_ID: process.env.ECWID_STORE_ID,
-  ECWID_TOKEN: process.env.ECWID_SECRET_TOKEN, // 🔥 CORREZIONE: era ECWID_TOKEN
-  PRICE_MULTIPLIER: 2, // RADDOPPIA SEMPRE I PREZZI MSY
-  MIN_PRICE_THRESHOLD: 20, // €20 SOGLIA MINIMA DOPO RADDOPPIO
-  REQUIRE_IMAGES: false, // IMMAGINI OPZIONALI PER PIÙ IMPORTAZIONI
-  MAX_RETRIES: 3,
-  BATCH_SIZE: 10,
-  DELAY_MS: 1000
-};
-
-// ===== MAPPING CATEGORIE MSY → ECWID COMPLETO =====
-
-const CATEGORY_MAPPING = {
-  // Categoria principale - TUTTI i prodotti finiscono qui
-  'default': 176669407, // pre-order (MACRO CATEGORIA)
+  MSY_API_URL: 'https://www.msy.com.au/api/products',
+  ECWID_STORE_ID: '329517085',
+  ECWID_API_TOKEN: process.env.ECWID_API_TOKEN,
+  ECWID_API_URL: `https://app.ecwid.com/api/v3/329517085`,
   
-  // Sottocategorie specifiche identiche MSY
-  'fitness': 185397803,
-  'elderly care': 185397546,
-  'elderlycare': 185397546,
-  'tools': 185397800,
-  'kitchen': 185397797,
-  'kitchentableware': 185397797,
-  'kitchen & tableware': 185397797,
-  'kitchenware': 185397802,
-  'pet care': 185397801,
-  'petcare': 185397801,
-  'beauty': 185397799,
-  'beautywellness': 185397799,
-  'beauty & wellness': 185397799,
-  'wellness': 185397799,
-  'home': 185397798,
-  'homeliving': 185397798,
-  'home and living': 185397798,
-  'living': 185397798,
-  'appliances': 185397544,
-  'garden': 187681325
+  // Configurazioni validazione
+  REQUIRE_IMAGES: false,  // Cambiato a false per evitare blocchi
+  MIN_PRICE_THRESHOLD: 20, // €20 minimo
+  MAX_RETRIES: 3,
+  RETRY_DELAY: 1000, // 1 secondo
+  
+  // Configurazioni batch
+  BATCH_SIZE: 10,
+  BATCH_DELAY: 2000, // 2 secondi tra batch
 };
 
 // ===== CLASSE PRINCIPALE MSY-ECWID SYNC =====
-
 class MSYEcwidSync {
   constructor() {
     this.stats = {
+      total: 0,
       processed: 0,
-      imported: 0,
-      skipped: 0,
+      created: 0,
+      updated: 0,
+      ignored: 0,
       errors: 0,
       reasons: {
         noImages: 0,
@@ -59,76 +40,70 @@ class MSYEcwidSync {
         apiError: 0
       }
     };
+    this.errorSKUs = [];
   }
 
-  // ===== VALIDAZIONE RIGIDA IMMAGINI =====
-  validateImages(product) {
-    if (!product.images || !Array.isArray(product.images)) {
-      return [];
+  // ===== RECUPERO PRODOTTI MSY =====
+  async fetchMSYProducts() {
+    try {
+      console.log('🔄 Recupero prodotti da MSY API...');
+      const response = await fetch(CONFIG.MSY_API_URL);
+      
+      if (!response.ok) {
+        throw new Error(`MSY API error: ${response.status}`);
+      }
+      
+      const products = await response.json();
+      console.log(`✅ Recuperati ${products.length} prodotti da MSY`);
+      return products;
+      
+    } catch (error) {
+      console.error('❌ Errore recupero prodotti MSY:', error.message);
+      throw error;
     }
+  }
 
-    const validImages = product.images.filter(img => {
-      if (!img || typeof img !== 'string') return false;
-      
-      // URL valido con estensione immagine
-      const urlPattern = /^https?:\/\/.+\.(jpg|jpeg|png|webp|gif)(\?.*)?$/i;
-      if (!urlPattern.test(img)) return false;
-      
-      // Non vuoto e lunghezza minima
-      if (img.trim().length < 10) return false;
-      
-      // Controlla che l'URL non sia placeholder
-      if (img.includes('placeholder') || img.includes('dummy')) return false;
-      
-      return true;
-    });
-
+  // ===== VALIDAZIONE IMMAGINI =====
+  validateImages(product) {
+    const validImages = [];
+    
+    // Controlla se esistono campi immagine nel prodotto
+    if (product.image) validImages.push(product.image);
+    if (product.images && Array.isArray(product.images)) {
+      validImages.push(...product.images.filter(img => img && typeof img === 'string'));
+    }
+    if (product.gallery && Array.isArray(product.gallery)) {
+      validImages.push(...product.gallery.filter(img => img && typeof img === 'string'));
+    }
+    
     return validImages;
   }
 
-  // ===== CALCOLO PREZZO CON RADDOPPIO OBBLIGATORIO =====
-  calculatePrice(msyPrice) {
-    if (!msyPrice || isNaN(msyPrice) || msyPrice <= 0) {
-      return null;
-    }
-
-    // RADDOPPIO FORZATO x2 - SEMPRE APPLICATO
-    const doubledPrice = parseFloat(msyPrice) * CONFIG.PRICE_MULTIPLIER;
-    return Math.round(doubledPrice * 100) / 100; // 2 decimali
+  // ===== CALCOLO PREZZO RADDOPPIATO =====
+  calculatePrice(originalPrice) {
+    const price = parseFloat(originalPrice);
+    if (isNaN(price) || price <= 0) return false;
+    
+    // Raddoppia il prezzo e arrotonda a 2 decimali
+    return Math.round(price * 2 * 100) / 100;
   }
 
   // ===== VALIDAZIONE PRODOTTO COMPLETA =====
-validateProduct(product) {
-  // 1. CONTROLLO IMMAGINI (OPZIONALE)
-  const validImages = this.validateImages(product);
-  
-  // 2. CONTROLLO E RADDOPPIO PREZZO  
-  const finalPrice = this.calculatePrice(product.price);
-  
-  // 3. CONTROLLO SOGLIA MINIMA €20 (DOPO RADDOPPIO!)
-  
-  // 🔥 INSERISCI LA CORREZIONE QUI - PRIMA DEL RETURN:
-  
-  // 🔥 NUOVO: Validazione quantity numerica
-  if (product.stock !== undefined && product.stock !== null) {
-    if (typeof product.stock !== 'number' || isNaN(product.stock) || product.stock < 0) {
-      product.stock = 0; // Imposta a 0 se non valido
-    } else {
-      product.stock = Math.floor(product.stock); // Assicura intero
+  validateProduct(product) {
+    // 1. CONTROLLO IMMAGINI (OPZIONALE)
+    const validImages = this.validateImages(product);
+    
+    if (CONFIG.REQUIRE_IMAGES && validImages.length === 0) {
+      this.stats.reasons.noImages++;
+      return {
+        valid: false,
+        reason: 'NO_IMAGES',
+        detail: `Prodotto "${product.name}" senza immagini valide`,
+        images: []
+      };
     }
-  } else {
-    product.stock = 0; // Default se mancante
-  }
-  
-  return {
-    valid: true,
-    price: finalPrice,
-    originalPrice: product.price,
-    images: validImages
-  };
-}
 
-    // 2. CONTROLLO E RADDOPPIO PREZZO
+    // 2. CONTROLLO E RADDOPPIO PREZZO  
     const finalPrice = this.calculatePrice(product.price);
     if (!finalPrice) {
       this.stats.reasons.invalidData++;
@@ -146,13 +121,24 @@ validateProduct(product) {
       return {
         valid: false,
         reason: 'PRICE_TOO_LOW',
-        detail: `Prezzo €${finalPrice} < €${CONFIG.MIN_PRICE_THRESHOLD} (raddoppiato da €${product.price} MSY)`,
+        detail: `Prezzo €${finalPrice} < €${CONFIG.MIN_PRICE_THRESHOLD}`,
         price: finalPrice,
         originalPrice: product.price,
         images: validImages
       };
     }
-
+    
+    // 4. NUOVO: Validazione quantity numerica
+    if (product.stock !== undefined && product.stock !== null) {
+      if (typeof product.stock !== 'number' || isNaN(product.stock) || product.stock < 0) {
+        product.stock = 0;
+      } else {
+        product.stock = Math.floor(product.stock);
+      }
+    } else {
+      product.stock = 0;
+    }
+    
     return {
       valid: true,
       price: finalPrice,
@@ -161,505 +147,302 @@ validateProduct(product) {
     };
   }
 
-  // ===== MAPPING CATEGORIA CON FALLBACK =====
-  mapCategory(msyCategory) {
-    if (!msyCategory) return CATEGORY_MAPPING.default;
-
-    // Normalizza categoria (lowercase, rimuovi spazi e caratteri speciali)
-    const normalized = msyCategory.toLowerCase()
-      .replace(/[&\s-]+/g, '')
-      .replace(/[^a-z0-9]/g, '');
-
-    // Cerca match esatto prima
-    if (CATEGORY_MAPPING[msyCategory.toLowerCase()]) {
-      return CATEGORY_MAPPING[msyCategory.toLowerCase()];
-    }
-
-    // Poi cerca match normalizzato
-    for (const [key, id] of Object.entries(CATEGORY_MAPPING)) {
-      const normalizedKey = key.toLowerCase()
-        .replace(/[&\s-]+/g, '')
-        .replace(/[^a-z0-9]/g, '');
-      if (normalizedKey === normalized) {
-        return id;
-      }
-    }
-
-    // Fallback sempre a pre-order
-    return CATEGORY_MAPPING.default;
-  }
-
-  // ===== UPLOAD IMMAGINI PRODOTTO (NUOVO) =====
-  async uploadProductImages(productId, imageUrls) {
-    if (!imageUrls || imageUrls.length === 0) return;
-
-    for (let i = 0; i < Math.min(imageUrls.length, 5); i++) {
-      try {
-        const imageUrl = imageUrls[i];
-        const uploadUrl = `https://app.ecwid.com/api/v3/${CONFIG.ECWID_STORE_ID}/products/${productId}/image`;
-        
-        // Download dell'immagine
-        const imageResponse = await axios.get(imageUrl, { 
-          responseType: 'arraybuffer',
-          timeout: 15000
-        });
-
-        // Upload su Ecwid
-        await axios.post(uploadUrl, imageResponse.data, {
-          headers: {
-            'Authorization': `Bearer ${CONFIG.ECWID_TOKEN}`,
-            'Content-Type': 'image/jpeg'
-          },
-          timeout: 30000
-        });
-
-        console.log(`   📸 Immagine ${i+1}/${imageUrls.length} caricata`);
-        
-        // Delay tra upload
-        await new Promise(resolve => setTimeout(resolve, 1500));
-
-      } catch (error) {
-        console.error(`   ❌ Errore upload immagine ${i+1}: ${error.message}`);
-      }
-    }
-  }
-
-  // ===== CREAZIONE PAYLOAD ECWID - CORREZIONE QUANTITY =====
-createEcwidPayload(product, validation) {
-  const ecwidCategoryId = this.mapCategory(product.category);
-
-  // 🔥 CORREZIONE CRITICA: Assicura che quantity sia SEMPRE numerico
-  let quantity = 0;
-  if (typeof product.stock === 'number' && !isNaN(product.stock) && product.stock >= 0) {
-    quantity = Math.floor(product.stock); // Intero positivo
-  }
-
-  // PAYLOAD PULITO - ZERO CAMPI DI EVIDENZA
-  const payload = {
-    name: product.name || 'Prodotto MSY',
-    description: product.description || '',
-    price: validation.price, // PREZZO SEMPRE RADDOPPIATO
-    categoryIds: [ecwidCategoryId], // SEMPRE ARRAY DI ID
-    sku: product.sku || `MSY-${product.id || Date.now()}`,
-    unlimited: false,
-    quantity: quantity, // 🔥 SEMPRE NUMERICO INTERO ≥ 0
-    enabled: true,
-    
-    // ❌❌❌ ANTI-HOMEPAGE - NESSUN CAMPO DI EVIDENZA ❌❌❌
-    // NON INCLUDERE MAI QUESTI CAMPI:
-    // isFeatured: false,
-    // showOnFrontpage: false,
-    // featured: false,
-    
-    // GALLERIA IMMAGINI - Le immagini saranno caricate separatamente
-    media: {
-      images: []
-    }
-  };
-
-  // Pulizia definitiva campi undefined/null
-  Object.keys(payload).forEach(key => {
-    if (payload[key] === undefined || payload[key] === null) {
-      delete payload[key];
-    }
-  });
-
-  return payload;
-}
-
-  // ===== IMPORT SU ECWID CON RETRY E GESTIONE 409 =====
-  async importToEcwid(payload, productId, validation) {
-    const url = `https://app.ecwid.com/api/v3/${CONFIG.ECWID_STORE_ID}/products`;
-    
-    for (let attempt = 1; attempt <= CONFIG.MAX_RETRIES; attempt++) {
-      try {
-        const response = await axios.post(url, payload, {
-          headers: {
-            'Authorization': `Bearer ${CONFIG.ECWID_TOKEN}`,
-            'Content-Type': 'application/json',
-            'Accept': 'application/json'
-          },
-          timeout: 30000
-        });
-
-        // 🔥 CORREZIONE: Gestisce 409 (duplicati) come successo
-        if (response.status === 200 || response.status === 201) {
-          this.stats.imported++;
-          console.log(`✅ IMPORTATO: ${payload.name}`);
-          console.log(`   💰 MSY: €${validation.originalPrice || 'N/A'} → Ecwid: €${payload.price}`);
-          console.log(`   📁 Categoria: ${payload.categoryIds[0]}`);
-          console.log(`   🖼️ Immagini da caricare: ${validation.images.length}`);
-          console.log(`   🏠 Featured: NO (anti-homepage attivo)`);
-
-          // 🔥 NUOVO: Upload immagini se presenti
-          if (validation.images.length > 0) {
-            await this.uploadProductImages(response.data.id, validation.images);
-          }
-
-          return { success: true, data: response.data };
-        }
-
-        return { success: false, error: `HTTP Status: ${response.status}` };
-
-      } catch (error) {
-        // 🔥 CORREZIONE: Gestisce 409 come "aggiornamento riuscito"
-        if (error.response && error.response.status === 409) {
-          this.stats.imported++;
-          console.log(`✅ AGGIORNATO: ${payload.name} (SKU già esistente)`);
-          console.log(`   💰 MSY: €${validation.originalPrice || 'N/A'} → Ecwid: €${payload.price}`);
-          console.log(`   📁 Categoria: ${payload.categoryIds[0]}`);
-          console.log(`   🔄 Azione: Aggiornamento SKU esistente`);
-          return { success: true, updated: true };
-        }
-
-        console.error(`❌ Tentativo ${attempt}/${CONFIG.MAX_RETRIES} fallito per prodotto ${productId}:`);
-        console.error(`   Errore: ${error.message}`);
-        
-        if (error.response) {
-          console.error(`   HTTP Status: ${error.response.status}`);
-          console.error(`   Dettagli API:`, JSON.stringify(error.response.data, null, 2));
-        }
-
-        if (attempt === CONFIG.MAX_RETRIES) {
-          this.stats.reasons.apiError++;
-          return { success: false, error: error.message };
-        }
-
-        // Delay progressivo prima del retry
-        await new Promise(resolve => setTimeout(resolve, 2000 * attempt));
-      }
-    }
-
-    return { success: false, error: 'Max retries exceeded' };
-  }
-
-  // ===== FETCH PRODOTTI DA MSY API =====
-  async fetchMSYProducts() {
+  // ===== RICERCA PRODOTTO IN ECWID =====
+  async searchEcwidProduct(sku) {
     try {
-      console.log('🔍 Connessione API MSY in corso...');
-      const response = await axios.get(CONFIG.MSY_BASE_URL, {
-        timeout: 30000,
+      const url = `${CONFIG.ECWID_API_URL}/products?sku=${encodeURIComponent(sku)}`;
+      const response = await fetch(url, {
         headers: {
-          'Accept': 'application/json',
-          'User-Agent': 'MSY-Ecwid-Sync/3.0'
+          'Authorization': `Bearer ${CONFIG.ECWID_API_TOKEN}`,
+          'Content-Type': 'application/json'
         }
       });
 
-      if (!response.data) {
-        throw new Error('Nessun dato ricevuto da MSY');
+      if (!response.ok) {
+        throw new Error(`Ecwid search error: ${response.status}`);
       }
 
-      // MSY restituisce { "price_list": [...] }
-      if (response.data.price_list && Array.isArray(response.data.price_list)) {
-        console.log(`✅ Recuperati ${response.data.price_list.length} prodotti da MSY API`);
-        return response.data.price_list;
+      const data = await response.json();
+      return data.items && data.items.length > 0 ? data.items[0] : null;
+
+    } catch (error) {
+      console.error(`❌ Errore ricerca prodotto ${sku}:`, error.message);
+      return null;
+    }
+  }
+
+  // ===== CREAZIONE/AGGIORNAMENTO PRODOTTO ECWID =====
+  async upsertEcwidProduct(product, validation, existingProduct = null) {
+    try {
+      const productData = {
+        name: product.name || `Prodotto ${product.sku}`,
+        sku: product.sku,
+        price: validation.price,
+        quantity: product.stock,
+        description: product.description || '',
+        enabled: true,
+        categories: product.category ? [{ name: product.category }] : []
+      };
+
+      // Aggiungi immagini se disponibili
+      if (validation.images.length > 0) {
+        productData.media = {
+          images: validation.images.map(url => ({ url }))
+        };
+      }
+
+      let url, method;
+      
+      if (existingProduct) {
+        // Aggiornamento
+        url = `${CONFIG.ECWID_API_URL}/products/${existingProduct.id}`;
+        method = 'PUT';
+        this.stats.updated++;
       } else {
-        throw new Error(`Formato dati MSY non valido. Ricevuto: ${JSON.stringify(response.data).substring(0, 200)}...`);
+        // Creazione
+        url = `${CONFIG.ECWID_API_URL}/products`;
+        method = 'POST';
+        this.stats.created++;
       }
 
-    } catch (error) {
-      console.error('❌ Errore connessione MSY API:', error.message);
-      if (error.response) {
-        console.error(`Status: ${error.response.status}`);
-        console.error(`Data:`, error.response.data);
+      const response = await fetch(url, {
+        method,
+        headers: {
+          'Authorization': `Bearer ${CONFIG.ECWID_API_TOKEN}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(productData)
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`Ecwid ${method} error: ${response.status} - ${errorText}`);
       }
-      throw new Error(`Impossibile recuperare prodotti MSY: ${error.message}`);
+
+      return await response.json();
+
+    } catch (error) {
+      console.error(`❌ Errore upsert prodotto ${product.sku}:`, error.message);
+      this.stats.errors++;
+      this.errorSKUs.push({
+        sku: product.sku,
+        step: existingProduct ? 'upsert' : 'create',
+        error: error.message
+      });
+      throw error;
     }
   }
 
-  // ===== PROCESSO SYNC PRINCIPALE - VERSIONE COMPLETA =====
+  // ===== PROCESSAMENTO SINGOLO PRODOTTO =====
+  async processProduct(product) {
+    try {
+      console.log(`🔄 Processo ${product.sku}...`);
+      
+      // 1. Validazione
+      const validation = this.validateProduct(product);
+      if (!validation.valid) {
+        console.log(`⚠️ ${product.sku}: ${validation.reason} - ${validation.detail}`);
+        this.stats.ignored++;
+        return;
+      }
+
+      // 2. Ricerca esistente
+      console.log(`🔍 Cerco ${product.sku} in Ecwid...`);
+      const existingProduct = await this.searchEcwidProduct(product.sku);
+
+      // 3. Creazione/Aggiornamento
+      const action = existingProduct ? 'aggiornamento' : 'creazione';
+      console.log(`📝 ${action.toUpperCase()} ${product.sku}...`);
+      
+      await this.upsertEcwidProduct(product, validation, existingProduct);
+      
+      console.log(`✅ ${product.sku}: ${action} completato`);
+      this.stats.processed++;
+
+    } catch (error) {
+      console.error(`❌ Errore processamento ${product.sku}:`, error.message);
+      this.stats.errors++;
+      this.errorSKUs.push({
+        sku: product.sku,
+        step: 'process',
+        error: error.message
+      });
+    }
+  }
+
+  // ===== PROCESSAMENTO BATCH =====
+  async processBatch(products) {
+    const batches = [];
+    for (let i = 0; i < products.length; i += CONFIG.BATCH_SIZE) {
+      batches.push(products.slice(i, i + CONFIG.BATCH_SIZE));
+    }
+
+    console.log(`📦 Processo ${products.length} prodotti in ${batches.length} batch di ${CONFIG.BATCH_SIZE}`);
+
+    for (let i = 0; i < batches.length; i++) {
+      console.log(`\n🚀 BATCH ${i + 1}/${batches.length}`);
+      
+      const batch = batches[i];
+      await Promise.all(batch.map(product => this.processProduct(product)));
+      
+      // Pausa tra batch per evitare rate limiting
+      if (i < batches.length - 1) {
+        console.log(`⏳ Pausa ${CONFIG.BATCH_DELAY}ms tra batch...`);
+        await new Promise(resolve => setTimeout(resolve, CONFIG.BATCH_DELAY));
+      }
+    }
+  }
+
+  // ===== SINCRONIZZAZIONE COMPLETA =====
   async sync() {
-    console.log('\n🚀 ═══════════════════════════════════════════════');
-    console.log('   SYNC MSY → ECWID - VERSIONE COMPLETA');
-    console.log('   🔥 TUTTE LE CORREZIONI APPLICATE 🔥');
-    console.log('═══════════════════════════════════════════════');
-    console.log('📋 Configurazioni attive:');
-    console.log(`   💰 Raddoppio prezzi: x${CONFIG.PRICE_MULTIPLIER} (SEMPRE APPLICATO)`);
-    console.log(`   ⚖️ Soglia minima: €${CONFIG.MIN_PRICE_THRESHOLD} (dopo raddoppio)`);
-    console.log(`   🖼️ Immagini: ${CONFIG.REQUIRE_IMAGES ? 'OBBLIGATORIE' : 'OPZIONALI'} + UPLOAD AUTOMATICO`);
-    console.log(`   🏠 Featured homepage: DISABILITATO (anti-homepage)`);
-    console.log(`   📁 Categoria principale: ${CATEGORY_MAPPING.default} (pre-order)`);
-    console.log(`   🔄 Gestione duplicati: ATTIVA (409 = aggiornamento)`);
-    console.log(`   🚀 Import: COMPLETO (nessun limite prodotti)`);
-    console.log('═══════════════════════════════════════════════\n');
-
-    const startTime = Date.now();
-    
     try {
-      // 1. RECUPERO PRODOTTI MSY
+      console.log('\n🚀 INIZIO SINCRONIZZAZIONE MSY → ECWID');
+      console.log('==========================================');
+      
+      const startTime = Date.now();
+      this.resetStats();
+
+      // 1. Recupera prodotti MSY
       const msyProducts = await this.fetchMSYProducts();
+      this.stats.total = msyProducts.length;
 
-      // 2. PROCESSAMENTO COMPLETO - RIMOSSO LIMITE 50 PRODOTTI
-      for (let i = 0; i < msyProducts.length; i++) {
-        const product = msyProducts[i];
-        this.stats.processed++;
-
-        // DEBUG: Log ogni prodotto
-        console.log(`\n🔄 [${i+1}/${msyProducts.length}] "${product.name || 'Senza nome'}"`);
-        console.log(`   🏷️ Categoria MSY: "${product.category || 'N/A'}"`);
-        console.log(`   💰 Prezzo MSY: €${product.price || 'N/A'}`);
-        console.log(`   🖼️ Immagini disponibili: ${product.images?.length || 0}`);
-
-        // 3. VALIDAZIONE SUPER RIGIDA
-        const validation = this.validateProduct(product);
-        if (!validation.valid) {
-          this.stats.skipped++;
-          console.log(`   ⏭️ SALTATO: ${validation.reason}`);
-          console.log(`   📝 ${validation.detail}`);
-          continue;
-        }
-
-        console.log(`   ✅ VALIDATO - Prezzo finale: €${validation.price} (raddoppiato da €${validation.originalPrice})`);
-        console.log(`   📁 Categoria Ecwid: ${this.mapCategory(product.category)}`);
-
-        // 4. CREAZIONE PAYLOAD ANTI-HOMEPAGE
-        const payload = this.createEcwidPayload(product, validation);
-
-        // 5. IMPORT CON RETRY E GESTIONE 409
-        const result = await this.importToEcwid(payload, product.id, validation);
-        if (!result.success) {
-          this.stats.errors++;
-          console.log(`   💥 ERRORE IMPORT: ${result.error}`);
-        }
-
-        // 6. DELAY ANTI RATE-LIMIT
-        if (i < msyProducts.length - 1) {
-          await new Promise(resolve => setTimeout(resolve, CONFIG.DELAY_MS));
-        }
-
-        // 🔥 RIMOSSO: Limitazione 50 prodotti per test
-        // Ora processa TUTTI i prodotti MSY
+      if (msyProducts.length === 0) {
+        console.log('⚠️ Nessun prodotto trovato da MSY');
+        return this.generateReport(Date.now() - startTime);
       }
 
+      // 2. Processamento batch
+      await this.processBatch(msyProducts);
+
+      // 3. Report finale
+      const duration = Date.now() - startTime;
+      return this.generateReport(duration);
+
     } catch (error) {
-      console.error('\n💥 ERRORE SYNC CRITICO:', error.message);
-      console.error('Stack:', error.stack);
+      console.error('❌ ERRORE SINCRONIZZAZIONE:', error.message);
       throw error;
     }
-
-    // 7. STATISTICHE FINALI COMPLETE
-    const duration = Math.round((Date.now() - startTime) / 1000);
-    this.printFinalStats(duration);
   }
 
-  // ===== REPORT STATISTICHE FINALI =====
-  printFinalStats(durationSeconds) {
-    console.log('\n📊 ═══════════════════════════════════════════════');
-    console.log('   REPORT FINALE SYNC MSY → ECWID');
-    console.log('═══════════════════════════════════════════════');
-    console.log(`⏱️ Durata totale: ${Math.floor(durationSeconds/60)}m ${durationSeconds%60}s`);
-    console.log(`📦 Prodotti processati: ${this.stats.processed}`);
-    console.log(`✅ Prodotti importati: ${this.stats.imported}`);
-    console.log(`⏭️ Prodotti saltati: ${this.stats.skipped}`);
-    console.log(`❌ Errori import: ${this.stats.errors}`);
-
-    console.log('\n📋 DETTAGLIO ESCLUSIONI:');
-    console.log(`   🖼️ Senza immagini valide: ${this.stats.reasons.noImages}`);
-    console.log(`   💰 Prezzo < €20 (post-raddoppio): ${this.stats.reasons.lowPrice}`);
-    console.log(`   📝 Dati prodotto non validi: ${this.stats.reasons.invalidData}`);
-    console.log(`   🔌 Errori API Ecwid: ${this.stats.reasons.apiError}`);
-
-    const successRate = this.stats.processed > 0 
-      ? ((this.stats.imported / this.stats.processed) * 100).toFixed(1) 
-      : '0.0';
-
-    console.log(`\n🎯 TASSO DI SUCCESSO: ${successRate}%`);
-
-    console.log('\n🎉 ═══ AGGIORNAMENTI APPLICATI ═══');
-    console.log('   ✅ Variabile token: CORRETTA (ECWID_SECRET_TOKEN)');
-    console.log('   ✅ Raddoppio prezzi: ATTIVO e FUNZIONANTE');
-    console.log('   ✅ Filtro €20+ post-raddoppio: ATTIVO');
-    console.log('   ✅ Immagini opzionali: ATTIVO + UPLOAD AUTOMATICO');
-    console.log('   ✅ Anti-homepage: ATTIVO (zero featured)');
-    console.log('   ✅ Categorizzazione: CORRETTA con ID reali');
-    console.log('   ✅ Gestione duplicati: 409 = aggiornamento');
-    console.log('   ✅ Import completo: NESSUN LIMITE prodotti');
-    console.log('   ✅ Payload API: FORMATO CORRETTO');
-
-    console.log('\n🏁 SYNC COMPLETO - SISTEMA 100% OPERATIVO!');
-    console.log('═══════════════════════════════════════════════');
-  }
-}
-
-// ===== STATUS E MONITORING API ENDPOINT =====
-class SyncStatusAPI {
-  constructor(syncInstance) {
-    this.sync = syncInstance;
-    this.startTime = null;
-    this.isRunning = false;
-  }
-
-  getStatus() {
-    return {
-      running: this.isRunning,
-      lastRun: this.startTime,
-      result: this.isRunning ? null : 'completed',
-      progress: {
-        current: this.sync.stats.processed,
-        total: 0, // Aggiornato dinamicamente
-        phase: this.isRunning ? 'processing' : 'idle'
-      },
-      serverTime: new Date().toISOString(),
-      config: {
-        priceMultiplier: CONFIG.PRICE_MULTIPLIER,
-        minPriceThreshold: CONFIG.MIN_PRICE_THRESHOLD,
-        enablePriceFilter: true,
-        requireImages: CONFIG.REQUIRE_IMAGES,
-        uploadImages: true, // 🔥 NUOVO
-        handleDuplicates: true // 🔥 NUOVO
-      },
-      stats: this.sync.stats
+  // ===== RESET STATISTICHE =====
+  resetStats() {
+    this.stats = {
+      total: 0,
+      processed: 0,
+      created: 0,
+      updated: 0,
+      ignored: 0,
+      errors: 0,
+      reasons: {
+        noImages: 0,
+        lowPrice: 0,
+        invalidData: 0,
+        apiError: 0
+      }
     };
+    this.errorSKUs = [];
   }
 
-  async startSync() {
-    if (this.isRunning) {
-      throw new Error('Sync già in corso');
-    }
+  // ===== GENERAZIONE REPORT =====
+  generateReport(duration) {
+    const report = {
+      success: true,
+      timestamp: new Date().toISOString(),
+      duration: `${Math.round(duration / 1000)}s`,
+      stats: this.stats,
+      errorSKUs: this.errorSKUs.slice(0, 10) // Prime 10 per evitare log troppo lunghi
+    };
 
-    this.isRunning = true;
-    this.startTime = new Date().toISOString();
+    console.log('\n📊 REPORT SINCRONIZZAZIONE');
+    console.log('==========================================');
+    console.log(`⏱️ Durata: ${report.duration}`);
+    console.log(`📈 Totale: ${this.stats.total}`);
+    console.log(`✅ Processati: ${this.stats.processed}`);
+    console.log(`🆕 Creati: ${this.stats.created}`);
+    console.log(`📝 Aggiornati: ${this.stats.updated}`);
+    console.log(`⏭️ Ignorati: ${this.stats.ignored}`);
+    console.log(`❌ Errori: ${this.stats.errors}`);
     
-    try {
-      await this.sync.sync();
-      this.isRunning = false;
-      return { success: true, message: 'Sync completato con successo' };
-    } catch (error) {
-      this.isRunning = false;
-      throw error;
+    if (this.errorSKUs.length > 0) {
+      console.log(`\n🔍 Primi errori (${Math.min(10, this.errorSKUs.length)}/${this.errorSKUs.length}):`);
+      this.errorSKUs.slice(0, 10).forEach(error => {
+        console.log(`   • ${error.sku} (${error.step}): ${error.error}`);
+      });
     }
+
+    return report;
   }
 }
 
-// ===== EXPORT MODULES =====
-module.exports = { MSYEcwidSync, SyncStatusAPI };
+// ===== ISTANZA GLOBALE =====
+const syncService = new MSYEcwidSync();
 
-// ===== ESECUZIONE DIRETTA =====
-if (require.main === module) {
-  const sync = new MSYEcwidSync();
-  console.log('🎬 Avvio sync MSY → Ecwid COMPLETO con tutti gli aggiornamenti...');
-  
-  sync.sync()
-    .then(() => {
-      console.log('\n🏆 PROCESSO COMPLETATO CON SUCCESSO!');
-      console.log('🔥 Sistema MSY→Ecwid 100% operativo con:');
-      console.log('   📸 Upload automatico immagini');
-      console.log('   🔄 Gestione duplicati intelligente');
-      console.log('   🚀 Import completo senza limiti');
-      console.log('   💰 Prezzi raddoppiati automaticamente');
-      process.exit(0);
-    })
-    .catch(error => {
-      console.error('\n💥 PROCESSO TERMINATO CON ERRORE:');
-      console.error('Errore:', error.message);
-      console.error('Stack:', error.stack);
-      process.exit(1);
-    });
-}
-
-// ===== SERVER EXPRESS PER RAILWAY =====
-const express = require('express');
-const app = express();
-
+// ===== ROUTES API =====
 app.use(express.json());
 
-// ENDPOINT HEALTHCHECK OBBLIGATORIO
+// Health check
 app.get('/health', (req, res) => {
-  res.status(200).json({
-    status: 'ok',
+  res.json({ 
+    status: 'OK', 
     timestamp: new Date().toISOString(),
-    version: '3.0-complete',
-    features: [
-      'complete-import',
-      'image-upload',
-      'duplicate-handling',
-      'price-doubling',
-      'anti-homepage'
-    ]
+    service: 'MSY-Ecwid Sync'
   });
 });
 
-// ENDPOINT STATUS SYNC
-let globalSync = null;
-let globalStatus = null;
-
-app.get('/v1/sync-status', (req, res) => {
-  res.status(200).json({
-    running: globalStatus?.isRunning || false,
-    lastRun: globalStatus?.startTime || null,
-    result: globalStatus?.isRunning ? null : 'completed',
-    progress: {
-      current: globalSync?.stats?.processed || 0,
-      total: 0,
-      phase: globalStatus?.isRunning ? 'processing' : 'idle'
-    },
-    serverTime: new Date().toISOString(),
-    config: {
-      priceMultiplier: CONFIG.PRICE_MULTIPLIER,
-      minPriceThreshold: CONFIG.MIN_PRICE_THRESHOLD,
-      enablePriceFilter: true,
-      requireImages: CONFIG.REQUIRE_IMAGES,
-      uploadImages: true,
-      handleDuplicates: true,
-      completeImport: true
-    },
-    version: '3.0-complete'
-  });
-});
-
-// ENDPOINT AVVIO SYNC
-app.post('/v1/start-sync', async (req, res) => {
-  if (globalStatus?.isRunning) {
-    return res.status(409).json({
-      message: 'Sync già in corso',
-      checkStatusAt: '/v1/sync-status'
+// Sync manuale
+app.post('/sync', async (req, res) => {
+  try {
+    console.log('🔄 Avvio sincronizzazione manuale...');
+    const report = await syncService.sync();
+    res.json(report);
+  } catch (error) {
+    console.error('❌ Errore sincronizzazione:', error.message);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      timestamp: new Date().toISOString()
     });
   }
-
-  res.status(200).json({
-    message: 'Sync COMPLETO avviato in background',
-    features: [
-      'Import completo (nessun limite)',
-      'Upload automatico immagini',
-      'Gestione duplicati 409',
-      'Prezzi raddoppiati',
-      'Anti-homepage'
-    ],
-    estimatedDuration: '15-30 minuti (dipende dal numero prodotti)',
-    checkStatusAt: '/v1/sync-status'
-  });
-
-  // Avvio sync in background
-  setTimeout(async () => {
-    try {
-      globalSync = new MSYEcwidSync();
-      globalStatus = { isRunning: true, startTime: new Date().toISOString() };
-      
-      await globalSync.sync();
-      
-      globalStatus.isRunning = false;
-      console.log('✅ Background sync COMPLETO completato');
-    } catch (error) {
-      globalStatus.isRunning = false;
-      console.error('❌ Background sync fallito:', error.message);
-    }
-  }, 1000);
 });
 
-// AVVIO SERVER
-const PORT = process.env.PORT || 9000;
+// Stats
+app.get('/stats', (req, res) => {
+  res.json({
+    stats: syncService.stats,
+    errors: syncService.errorSKUs.length,
+    timestamp: new Date().toISOString()
+  });
+});
 
-app.listen(PORT, '0.0.0.0', () => {
-  console.log(`🚀 MSY-Ecwid Sync Server v3.0-COMPLETE sulla porta ${PORT}`);
-  console.log(`🔥 VERSIONE COMPLETA CON TUTTI GLI AGGIORNAMENTI:`);
-  console.log(`   💰 Raddoppio prezzi: x${CONFIG.PRICE_MULTIPLIER}`);
-  console.log(`   ⚖️ Soglia minima: €${CONFIG.MIN_PRICE_THRESHOLD}`);
-  console.log(`   🖼️ Immagini: ${CONFIG.REQUIRE_IMAGES ? 'obbligatorie' : 'opzionali'} + UPLOAD`);
-  console.log(`   🔄 Duplicati 409: GESTITI come aggiornamenti`);
-  console.log(`   🚀 Import: COMPLETO (tutti i prodotti)`);
-  console.log(`   🏠 Anti-homepage: ATTIVO`);
-  console.log(`📡 Endpoints disponibili:`);
-  console.log(`   GET /health - Healthcheck completo`);
-  console.log(`   GET /v1/sync-status - Status sync`);
-  console.log(`   POST /v1/start-sync - Avvia sync completo`);
+// ===== CRON JOB AUTOMATICO =====
+// Esegui ogni giorno alle 6:00 AM
+cron.schedule('0 6 * * *', async () => {
+  try {
+    console.log('⏰ Avvio sincronizzazione programmata...');
+    await syncService.sync();
+  } catch (error) {
+    console.error('❌ Errore sincronizzazione programmata:', error.message);
+  }
+}, {
+  timezone: "Europe/Rome"
+});
+
+// ===== AVVIO SERVER =====
+app.listen(PORT, () => {
+  console.log(`🚀 Server avviato su porta ${PORT}`);
+  console.log('📋 API disponibili:');
+  console.log('   GET  /health - Health check');
+  console.log('   POST /sync   - Sincronizzazione manuale');  
+  console.log('   GET  /stats  - Statistiche');
+  console.log('⏰ Sincronizzazione automatica: ogni giorno alle 6:00 AM');
+});
+
+// Gestione errori non catturati
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('❌ Unhandled Rejection:', reason);
+});
+
+process.on('uncaughtException', (error) => {
+  console.error('❌ Uncaught Exception:', error);
+  process.exit(1);
 });
