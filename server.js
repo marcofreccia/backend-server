@@ -18,9 +18,9 @@ const CONFIG = {
   SYNC_MODE: 'HYBRID', // CSV prima, JSON fallback
   
   // ECWID CONFIG
-  ECWID_STORE_ID: '329517085',
+  ECWID_STORE_ID: '29517085',
   ECWID_API_TOKEN: process.env.ECWID_API_TOKEN,
-  ECWID_API_URL: `https://app.ecwid.com/api/v3/329517085`,
+  ECWID_API_URL: `https://app.ecwid.com/api/v3/29517085`,
   
   // VALIDAZIONE
   REQUIRE_IMAGES: false,
