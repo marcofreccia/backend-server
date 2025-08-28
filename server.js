@@ -1,27 +1,3 @@
-{
-  "name": "msy-ecwid-hybrid-sync",
-  "version": "1.0.0",
-  "description": "Hybrid MSY to Ecwid product synchronization",
-  "main": "server.js",
-  "scripts": {
-    "start": "node server.js",
-    "dev": "nodemon server.js"
-  },
-  "dependencies": {
-    "express": "^4.18.2",
-    "node-fetch": "^2.6.7",
-    "node-cron": "^3.0.2",
-    "papaparse": "^5.4.1"
-  },
-  "engines": {
-    "node": ">=16.0.0"
-  },
-  "keywords": ["ecwid", "msy", "sync"],
-  "author": "Your Name",
-  "license": "MIT"
-}
-📄 2. server.js COMPLETO AGGIORNATO:
-javascript
 const express = require('express');
 const fetch = require('node-fetch');
 const cron = require('node-cron');
@@ -32,38 +8,30 @@ const PORT = process.env.PORT || 3000;
 
 // ===== CONFIGURAZIONE COMPLETA =====
 const CONFIG = {
-  // FONTI DATI MSY
   DATA_SOURCES: {
     CSV_URL: 'https://msy.madtec.be/price_list/pricelist_en.csv',
-    JSON_URL: 'http://msy.madtec.be/price_list/pricelist_en.json',
+    JSON_URL: 'http://msy.madtec.be/price_list/pricelist_en.json'
   },
   
-  // MODALITÀ E CONFIGURAZIONI
   SYNC_MODE: 'HYBRID',
   ECWID_STORE_ID: process.env.ECWID_STORE_ID || '29517085',
   ECWID_API_TOKEN: process.env.ECWID_API_TOKEN,
   ECWID_API_URL: `https://app.ecwid.com/api/v3/${process.env.ECWID_STORE_ID || '29517085'}`,
   
-  // PARAMETRI DI VALIDAZIONE (MODIFICABILI)
-  REQUIRE_IMAGES: false,                    // Non richiede immagini obbligatoriamente
-  MIN_PRICE_THRESHOLD: 15,                 // Soglia prezzo minimo ridotta
-  PRICE_MULTIPLIER: 2,                     // Moltiplicatore prezzo (MSY x2)
-  
-  // PARAMETRI BATCH E RATE LIMITING
-  BATCH_SIZE: 5,                           // Batch più piccoli per evitare rate limiting
-  BATCH_DELAY: 5000,                       // Delay aumentato (5 secondi)
-  REQUEST_TIMEOUT: 45000,                  // Timeout richieste aumentato
-  
-  // USER AGENT E HEADERS
-  USER_AGENT: 'MSY-Ecwid-Sync/1.0 (Railway Deployment)',
+  // PARAMETRI OTTIMIZZATI
+  REQUIRE_IMAGES: false,
+  MIN_PRICE_THRESHOLD: 15,
+  PRICE_MULTIPLIER: 2,
+  BATCH_SIZE: 5,
+  BATCH_DELAY: 5000,
+  REQUEST_TIMEOUT: 45000,
+  USER_AGENT: 'MSY-Ecwid-Sync/2.0'
 };
 
-// ===== UTILITÀ PARSING =====
+// ===== UTILITY FUNCTIONS =====
 function parsePrice(price) {
   if (!price || price === null || price === undefined || price === '') return 0;
-  const cleanPrice = String(price)
-    .replace(/[^\d.,\-]/g, '')
-    .replace(',', '.');
+  const cleanPrice = String(price).replace(/[^\d.,-]/g, '').replace(',', '.');
   const parsed = parseFloat(cleanPrice);
   return isNaN(parsed) ? 0 : Math.max(0, parsed);
 }
@@ -90,7 +58,7 @@ function extractImages(product) {
   return images;
 }
 
-// ===== CLASSE SYNC IBRIDA COMPLETA =====
+// ===== CLASSE SYNC PRINCIPALE =====
 class HybridMSYEcwidSync {
   constructor() {
     this.resetStats();
@@ -117,7 +85,7 @@ class HybridMSYEcwidSync {
     this.errorSKUs = [];
   }
 
-  // FETCH CSV CON PARSING MSY CORRETTO
+  // FETCH CSV CON PARSING CORRETTO MSY
   async fetchCSVProducts() {
     try {
       console.log('📊 Recupero CSV MSY...');
@@ -139,20 +107,19 @@ class HybridMSYEcwidSync {
       // PARSING SPECIFICO PER FORMATO MSY
       const parsed = Papa.parse(csvData, {
         header: true,
-        delimiter: ';',                      // MSY usa semicolon come separator
+        delimiter: ';',
         skipEmptyLines: true,
-        transformHeader: (header) => {
-          // MAPPING ESATTO DEI CAMPI MSY
+        transformHeader: function(header) {
           const headerMap = {
             'Article no.': 'article_num',
-            'Name': 'name',
+            'Name': 'name', 
             'Description': 'description',
             'Price': 'price',
             'VAT rate': 'vat_rate',
             'Currency': 'currency',
             'Stock': 'stock',
             '1. Photo': 'photo_1',
-            '2. Photo': 'photo_2',
+            '2. Photo': 'photo_2', 
             '3. Photo': 'photo_3',
             '4. Photo': 'photo_4',
             '5. Photo': 'photo_5',
@@ -173,18 +140,16 @@ class HybridMSYEcwidSync {
         }
       });
       
-      if (parsed.errors && parsed.errors.length > 0) {
-        console.warn('⚠️ Errori di parsing CSV:', parsed.errors);
-      }
-      
-      const validProducts = parsed.data.filter(row => {
+      const validProducts = parsed.data.filter(function(row) {
         return row && row.article_num && row.article_num.trim() !== '' &&
                row.price && row.price.trim() !== '' &&
                row.name && row.name.trim() !== '';
       });
       
-      console.log(`✅ CSV: ${validProducts.length} prodotti validi trovati`);
-      console.log(`📝 Primo prodotto esempio: ${validProducts[0]?.article_num} - ${validProducts[0]?.name}`);
+      console.log(`✅ CSV: ${validProducts.length} prodotti validi`);
+      if (validProducts.length > 0) {
+        console.log(`📝 Primo prodotto: ${validProducts[0].article_num} - ${validProducts[0].name}`);
+      }
       
       return validProducts;
       
@@ -197,7 +162,7 @@ class HybridMSYEcwidSync {
   // FETCH JSON FALLBACK
   async fetchJSONProducts() {
     try {
-      console.log('🔄 Recupero JSON MSY fallback...');
+      console.log('🔄 Recupero JSON MSY...');
       const response = await fetch(CONFIG.DATA_SOURCES.JSON_URL, {
         timeout: CONFIG.REQUEST_TIMEOUT,
         headers: {
@@ -212,7 +177,7 @@ class HybridMSYEcwidSync {
       
       const data = await response.json();
       if (!data || !data.price_list || !Array.isArray(data.price_list)) {
-        throw new Error('JSON structure invalid - price_list not found');
+        throw new Error('JSON structure invalid');
       }
       
       console.log(`✅ JSON: ${data.price_list.length} prodotti`);
@@ -224,10 +189,39 @@ class HybridMSYEcwidSync {
     }
   }
 
-  // NORMALIZZAZIONE PRODOTTO MSY → ECWID
+  // STRATEGIA MULTI-FONTE
+  async fetchProductsMultiSource() {
+    const results = { source: null, products: [], errors: [] };
+    
+    console.log('🎯 MODALITÀ HYBRID: CSV prima, JSON fallback');
+    
+    // Prova CSV prima
+    try {
+      results.products = await this.fetchCSVProducts();
+      results.source = 'CSV_PRIMARY';
+      console.log('✅ HYBRID: CSV primario riuscito!');
+      return results;
+    } catch (error) {
+      results.errors.push(`CSV: ${error.message}`);
+      console.log('⚠️ HYBRID: CSV fallito, tentativo JSON...');
+    }
+    
+    // Fallback JSON
+    try {
+      results.products = await this.fetchJSONProducts();
+      results.source = 'JSON_FALLBACK';
+      console.log('✅ HYBRID: JSON fallback riuscito!');
+      return results;
+    } catch (error) {
+      results.errors.push(`JSON: ${error.message}`);
+    }
+    
+    throw new Error(`Tutte le fonti fallite: ${results.errors.join(' | ')}`);
+  }
+
+  // NORMALIZZAZIONE PRODOTTO
   normalizeProduct(product) {
     try {
-      // Validazione base
       if (!product || !product.article_num || !product.name || !product.price) {
         this.stats.reasons.invalidData++;
         return null;
@@ -241,55 +235,40 @@ class HybridMSYEcwidSync {
 
       const finalPrice = originalPrice * CONFIG.PRICE_MULTIPLIER;
       
-      // Filtro prezzo minimo DOPO il raddoppio
       if (finalPrice < CONFIG.MIN_PRICE_THRESHOLD) {
         this.stats.reasons.lowPrice++;
         return null;
       }
 
-      // Estrazione immagini
       const images = extractImages(product);
       
-      // Controllo immagini obbligatorie
       if (CONFIG.REQUIRE_IMAGES && images.length === 0) {
         this.stats.reasons.noImages++;
         return null;
       }
 
-      // Stock validation
       const stockQuantity = parseStock(product.stock);
 
       return {
         sku: product.article_num.trim(),
         name: product.name.trim(),
         description: (product.description || '').trim(),
-        price: Math.round(finalPrice * 100) / 100, // Arrotonda a 2 decimali
+        price: Math.round(finalPrice * 100) / 100,
         quantity: stockQuantity,
-        stock: stockQuantity,
         brand: (product.brand || '').trim(),
         category: (product.main_category || '').trim(),
-        subcategory: (product.subcategory || '').trim(),
-        ean: (product.ean || '').trim(),
-        weight: product.weight || null,
-        dimensions: {
-          height: product.height || null,
-          width: product.width || null,
-          length: product.length || null,
-          volume: product.volume || null
-        },
         images: images,
-        originalPrice: originalPrice,
-        advisedPrice: parsePrice(product.advised_price) || null
+        originalPrice: originalPrice
       };
       
     } catch (error) {
-      console.error(`❌ Errore normalizzazione prodotto ${product.article_num}:`, error);
+      console.error(`❌ Errore normalizzazione ${product.article_num}:`, error.message);
       this.stats.reasons.invalidData++;
       return null;
     }
   }
 
-  // RICERCA PRODOTTO ECWID ESISTENTE
+  // RICERCA PRODOTTO ESISTENTE ECWID
   async searchEcwidProduct(sku) {
     try {
       const url = `${CONFIG.ECWID_API_URL}/products?sku=${encodeURIComponent(sku)}`;
@@ -304,23 +283,23 @@ class HybridMSYEcwidSync {
 
       if (!response.ok) {
         if (response.status === 401) {
-          throw new Error('Ecwid token non autorizzato - verifica ECWID_API_TOKEN');
+          throw new Error('Token Ecwid non autorizzato');
         }
-        throw new Error(`Ecwid search error: ${response.status} ${response.statusText}`);
+        throw new Error(`Ecwid search error: ${response.status}`);
       }
 
       const data = await response.json();
       return data.items && data.items.length > 0 ? data.items[0] : null;
 
     } catch (error) {
-      console.error(`❌ Errore ricerca prodotto ${sku}:`, error.message);
+      console.error(`❌ Errore ricerca ${sku}:`, error.message);
       this.stats.reasons.apiError++;
       return null;
     }
   }
 
   // CREAZIONE/AGGIORNAMENTO PRODOTTO ECWID
-  async upsertEcwidProduct(normalizedProduct, existingProduct = null) {
+  async upsertEcwidProduct(normalizedProduct, existingProduct) {
     try {
       const productData = {
         name: normalizedProduct.name,
@@ -328,33 +307,33 @@ class HybridMSYEcwidSync {
         price: normalizedProduct.price,
         quantity: normalizedProduct.quantity,
         description: normalizedProduct.description,
-        enabled: true,
-        categories: normalizedProduct.category ? [{ name: normalizedProduct.category }] : [],
-        weight: normalizedProduct.weight,
-        dimensions: normalizedProduct.dimensions
+        enabled: true
       };
 
-      // Aggiungi immagini se presenti
+      if (normalizedProduct.category) {
+        productData.categories = [{ name: normalizedProduct.category }];
+      }
+
       if (normalizedProduct.images && normalizedProduct.images.length > 0) {
         productData.media = {
-          images: normalizedProduct.images.slice(0, 5).map(url => ({ url }))
+          images: normalizedProduct.images.slice(0, 5).map(function(url) {
+            return { url: url };
+          })
         };
       }
 
       let url, method;
       
       if (existingProduct) {
-        // Aggiornamento prodotto esistente
         url = `${CONFIG.ECWID_API_URL}/products/${existingProduct.id}`;
         method = 'PUT';
       } else {
-        // Creazione nuovo prodotto
         url = `${CONFIG.ECWID_API_URL}/products`;
         method = 'POST';
       }
 
       const response = await fetch(url, {
-        method,
+        method: method,
         headers: {
           'Authorization': `Bearer ${CONFIG.ECWID_API_TOKEN}`,
           'Content-Type': 'application/json',
@@ -411,17 +390,15 @@ class HybridMSYEcwidSync {
       this.stats.processed++;
 
     } catch (error) {
-      // Errore già loggato in upsertEcwidProduct
       this.stats.errors++;
     }
   }
 
-  // PROCESSAMENTO BATCH CON RATE LIMITING
+  // PROCESSAMENTO BATCH
   async processBatch(products) {
     const totalBatches = Math.ceil(products.length / CONFIG.BATCH_SIZE);
     
     console.log(`📦 Processamento in ${totalBatches} batch di ${CONFIG.BATCH_SIZE} prodotti`);
-    console.log(`⏱️ Delay tra batch: ${CONFIG.BATCH_DELAY}ms`);
 
     for (let i = 0; i < products.length; i += CONFIG.BATCH_SIZE) {
       const currentBatch = Math.floor(i / CONFIG.BATCH_SIZE) + 1;
@@ -429,82 +406,53 @@ class HybridMSYEcwidSync {
       
       console.log(`\n🚀 BATCH ${currentBatch}/${totalBatches} (${batch.length} prodotti)`);
       
-      // Processamento parallelo del batch
-      await Promise.all(batch.map(product => this.processProduct(product)));
+      const self = this;
+      await Promise.all(batch.map(function(product) {
+        return self.processProduct(product);
+      }));
       
-      // Progress report
       const processedSoFar = Math.min(i + CONFIG.BATCH_SIZE, products.length);
       const progressPercent = Math.round((processedSoFar / products.length) * 100);
       console.log(`📈 Progresso: ${processedSoFar}/${products.length} (${progressPercent}%)`);
       
-      // Delay tra batch per rate limiting
       if (currentBatch < totalBatches) {
         console.log(`⏸️ Pausa ${CONFIG.BATCH_DELAY}ms...`);
-        await new Promise(resolve => setTimeout(resolve, CONFIG.BATCH_DELAY));
+        await new Promise(function(resolve) {
+          setTimeout(resolve, CONFIG.BATCH_DELAY);
+        });
       }
     }
-  }
-
-  // STRATEGIA MULTI-FONTE CON FALLBACK
-  async fetchProductsMultiSource() {
-    const results = { source: null, products: [], errors: [] };
-    
-    console.log('🎯 MODALITÀ HYBRID: CSV primario con JSON fallback');
-    
-    // Prova CSV prima (più affidabile)
-    try {
-      results.products = await this.fetchCSVProducts();
-      results.source = 'CSV_PRIMARY';
-      console.log(`✅ HYBRID: CSV primario riuscito - ${results.products.length} prodotti`);
-      return results;
-    } catch (error) {
-      results.errors.push(`CSV: ${error.message}`);
-      console.log('⚠️ HYBRID: CSV fallito, tentativo JSON fallback...');
-    }
-    
-    // Fallback JSON
-    try {
-      results.products = await this.fetchJSONProducts();
-      results.source = 'JSON_FALLBACK';
-      console.log(`✅ HYBRID: JSON fallback riuscito - ${results.products.length} prodotti`);
-      return results;
-    } catch (error) {
-      results.errors.push(`JSON: ${error.message}`);
-    }
-    
-    throw new Error(`Tutte le fonti fallite: ${results.errors.join(' | ')}`);
   }
 
   // SINCRONIZZAZIONE PRINCIPALE
   async sync() {
     try {
-      console.log('\n🚀 INIZIO SINCRONIZZAZIONE IBRIDA MSY → ECWID');
-      console.log('=====================================================');
+      console.log('\n🚀 INIZIO SINCRONIZZAZIONE MSY → ECWID');
+      console.log('==========================================');
       
       this.resetStats();
       this.stats.startTime = Date.now();
 
-      // Recupero prodotti con strategia ibrida
       const result = await this.fetchProductsMultiSource();
       this.stats.total = result.products.length;
       this.stats.source = result.source;
 
-      console.log(`📊 Fonte dati: ${result.source}`);
-      console.log(`📈 Prodotti totali: ${result.products.length}`);
+      console.log(`📊 Fonte: ${result.source}`);
+      console.log(`📈 Prodotti: ${result.products.length}`);
 
       if (result.products.length === 0) {
-        console.log('⚠️ Nessun prodotto trovato dalle fonti MSY');
+        console.log('⚠️ Nessun prodotto trovato');
+        this.stats.endTime = Date.now();
         return this.generateReport();
       }
 
-      // Processamento prodotti
       await this.processBatch(result.products);
 
       this.stats.endTime = Date.now();
       return this.generateReport();
 
     } catch (error) {
-      console.error('❌ ERRORE SYNC PRINCIPALE:', error.message);
+      console.error('❌ ERRORE SYNC:', error.message);
       this.stats.endTime = Date.now();
       throw error;
     }
@@ -529,25 +477,23 @@ class HybridMSYEcwidSync {
         errors: this.stats.errors,
         reasons: this.stats.reasons
       },
-      errorSKUs: this.errorSKUs.slice(0, 20), // Prime 20 errori
+      errorSKUs: this.errorSKUs.slice(0, 10),
       performance: {
         productsPerSecond: durationSeconds > 0 ? Math.round(this.stats.processed / durationSeconds * 10) / 10 : 0,
         successRate: this.stats.total > 0 ? Math.round((this.stats.processed / this.stats.total) * 100) : 0
       }
     };
 
-    console.log('\n📊 REPORT SINCRONIZZAZIONE IBRIDA');
-    console.log('=====================================');
+    console.log('\n📊 REPORT SINCRONIZZAZIONE');
+    console.log('===========================');
     console.log(`📊 Fonte: ${this.stats.source}`);
     console.log(`⏱️ Durata: ${durationSeconds}s`);
     console.log(`📈 Totale: ${this.stats.total}`);
     console.log(`✅ Processati: ${this.stats.processed}`);
     console.log(`🆕 Creati: ${this.stats.created}`);
     console.log(`📝 Aggiornati: ${this.stats.updated}`);
-    console.log(`⏭️ Ignorati: ${this.stats.ignored} (${this.stats.reasons.lowPrice} prezzo basso, ${this.stats.reasons.noImages} senza immagini)`);
+    console.log(`⏭️ Ignorati: ${this.stats.ignored}`);
     console.log(`❌ Errori: ${this.stats.errors}`);
-    console.log(`🎯 Tasso successo: ${report.performance.successRate}%`);
-    console.log(`⚡ Velocità: ${report.performance.productsPerSecond} prodotti/secondo`);
 
     return report;
   }
@@ -556,33 +502,17 @@ class HybridMSYEcwidSync {
 // ===== ISTANZA GLOBALE =====
 const syncService = new HybridMSYEcwidSync();
 
-// ===== MIDDLEWARE EXPRESS =====
+// ===== MIDDLEWARE =====
 app.use(express.json());
-app.use((req, res, next) => {
+app.use(function(req, res, next) {
   console.log(`${new Date().toISOString()} - ${req.method} ${req.path}`);
   next();
 });
 
-// ===== ROUTES API COMPLETE =====
+// ===== ROUTES API =====
 
-// ROOT
-app.get('/', (req, res) => {
-  res.json({
-    message: 'Hybrid MSY-Ecwid Sync API - VERSIONE COMPLETA',
-    version: '2.0.0',
-    endpoints: {
-      health: 'GET /health - Health check sistema',
-      sync: 'POST /sync - Sincronizzazione manuale completa', 
-      stats: 'GET /stats - Statistiche dettagliate',
-      testSources: 'GET /test-sources - Test connessioni MSY',
-      config: 'GET /config - Visualizza configurazione'
-    },
-    timestamp: new Date().toISOString()
-  });
-});
-
-// HEALTHCHECK POTENZIATO
-app.get('/health', (req, res) => {
+// HEALTHCHECK
+app.get('/health', function(req, res) {
   res.status(200).json({ 
     status: 'OK', 
     timestamp: new Date().toISOString(),
@@ -594,21 +524,28 @@ app.get('/health', (req, res) => {
       hasToken: !!CONFIG.ECWID_API_TOKEN,
       minPrice: CONFIG.MIN_PRICE_THRESHOLD,
       priceMultiplier: CONFIG.PRICE_MULTIPLIER,
-      batchSize: CONFIG.BATCH_SIZE,
-      requireImages: CONFIG.REQUIRE_IMAGES
-    },
-    uptime: process.uptime()
+      batchSize: CONFIG.BATCH_SIZE
+    }
   });
 });
 
-// SINCRONIZZAZIONE COMPLETA
-app.post('/sync', async (req, res) => {
+// ROOT
+app.get('/', function(req, res) {
+  res.json({
+    message: 'Hybrid MSY-Ecwid Sync API v2.0',
+    endpoints: ['/health', '/sync', '/stats', '/test-sources', '/config'],
+    timestamp: new Date().toISOString()
+  });
+});
+
+// SINCRONIZZAZIONE
+app.post('/sync', async function(req, res) {
   try {
     console.log('\n🔄 AVVIO SINCRONIZZAZIONE MANUALE...');
     const report = await syncService.sync();
     res.json(report);
   } catch (error) {
-    console.error('❌ ERRORE SINCRONIZZAZIONE:', error.message);
+    console.error('❌ ERRORE SYNC:', error.message);
     res.status(500).json({
       success: false,
       error: error.message,
@@ -618,123 +555,75 @@ app.post('/sync', async (req, res) => {
   }
 });
 
-// STATISTICHE DETTAGLIATE
-app.get('/stats', (req, res) => {
+// STATISTICHE
+app.get('/stats', function(req, res) {
   res.json({
     currentStats: syncService.stats,
     errorCount: syncService.errorSKUs.length,
-    recentErrors: syncService.errorSKUs.slice(-10),
+    recentErrors: syncService.errorSKUs.slice(-5),
     config: {
       mode: CONFIG.SYNC_MODE,
       storeId: CONFIG.ECWID_STORE_ID,
       batchSize: CONFIG.BATCH_SIZE,
       minPriceThreshold: CONFIG.MIN_PRICE_THRESHOLD,
-      priceMultiplier: CONFIG.PRICE_MULTIPLIER,
-      requireImages: CONFIG.REQUIRE_IMAGES,
-      batchDelay: CONFIG.BATCH_DELAY
+      priceMultiplier: CONFIG.PRICE_MULTIPLIER
     },
     timestamp: new Date().toISOString()
   });
 });
 
-// TEST FONTI DATI MSY
-app.get('/test-sources', async (req, res) => {
+// TEST FONTI DATI
+app.get('/test-sources', async function(req, res) {
   const results = { 
     timestamp: new Date().toISOString(), 
-    tests: {},
-    summary: { accessible: 0, failed: 0 }
+    tests: {}
   };
   
   // Test CSV
   try {
     const csvResponse = await fetch(CONFIG.DATA_SOURCES.CSV_URL, { 
       method: 'HEAD', 
-      timeout: 15000,
+      timeout: 10000,
       headers: { 'User-Agent': CONFIG.USER_AGENT }
     });
     results.tests.csv = {
       status: csvResponse.ok ? 'OK' : 'ERROR',
       statusCode: csvResponse.status,
-      url: CONFIG.DATA_SOURCES.CSV_URL,
-      contentType: csvResponse.headers.get('content-type'),
-      contentLength: csvResponse.headers.get('content-length')
+      url: CONFIG.DATA_SOURCES.CSV_URL
     };
-    if (csvResponse.ok) results.summary.accessible++;
-    else results.summary.failed++;
   } catch (error) {
     results.tests.csv = {
       status: 'ERROR',
       error: error.message,
       url: CONFIG.DATA_SOURCES.CSV_URL
     };
-    results.summary.failed++;
   }
   
   // Test JSON
   try {
     const jsonResponse = await fetch(CONFIG.DATA_SOURCES.JSON_URL, { 
       method: 'HEAD', 
-      timeout: 15000,
+      timeout: 10000,
       headers: { 'User-Agent': CONFIG.USER_AGENT }
     });
     results.tests.json = {
       status: jsonResponse.ok ? 'OK' : 'ERROR',
       statusCode: jsonResponse.status,
-      url: CONFIG.DATA_SOURCES.JSON_URL,
-      contentType: jsonResponse.headers.get('content-type'),
-      contentLength: jsonResponse.headers.get('content-length')
+      url: CONFIG.DATA_SOURCES.JSON_URL
     };
-    if (jsonResponse.ok) results.summary.accessible++;
-    else results.summary.failed++;
   } catch (error) {
     results.tests.json = {
       status: 'ERROR',
       error: error.message,
       url: CONFIG.DATA_SOURCES.JSON_URL
     };
-    results.summary.failed++;
-  }
-  
-  // Test token Ecwid
-  try {
-    if (CONFIG.ECWID_API_TOKEN) {
-      const ecwidResponse = await fetch(`${CONFIG.ECWID_API_URL}/products?limit=1`, {
-        headers: {
-          'Authorization': `Bearer ${CONFIG.ECWID_API_TOKEN}`,
-          'User-Agent': CONFIG.USER_AGENT
-        },
-        timeout: 10000
-      });
-      results.tests.ecwid = {
-        status: ecwidResponse.ok ? 'OK' : 'ERROR',
-        statusCode: ecwidResponse.status,
-        url: CONFIG.ECWID_API_URL,
-        hasValidToken: true
-      };
-      if (ecwidResponse.ok) results.summary.accessible++;
-      else results.summary.failed++;
-    } else {
-      results.tests.ecwid = {
-        status: 'ERROR',
-        error: 'ECWID_API_TOKEN non configurato',
-        hasValidToken: false
-      };
-      results.summary.failed++;
-    }
-  } catch (error) {
-    results.tests.ecwid = {
-      status: 'ERROR',
-      error: error.message,
-      hasValidToken: !!CONFIG.ECWID_API_TOKEN
-    };
-    results.summary.failed++;
   }
   
   res.json(results);
 });
 
-// CONFIGURAZIONE SISTEMA
-app.get('/config', (req, res) => {
+// CONFIGURAZIONE
+app.get('/config', function(req, res) {
   res.json({
     version: '2.0.0',
     mode: CONFIG.SYNC_MODE,
@@ -758,8 +647,8 @@ app.get('/config', (req, res) => {
   });
 });
 
-// ===== CRON JOB AUTOMATICO =====
-cron.schedule('0 6 * * *', async () => {
+// ===== CRON JOB =====
+cron.schedule('0 6 * * *', async function() {
   try {
     console.log('\n⏰ SINCRONIZZAZIONE AUTOMATICA (6:00 AM)...');
     await syncService.sync();
@@ -770,34 +659,32 @@ cron.schedule('0 6 * * *', async () => {
   timezone: "Europe/Rome"
 });
 
-// ===== GESTIONE ERRORI GLOBALI =====
-process.on('unhandledRejection', (reason, promise) => {
-  console.error('❌ Unhandled Rejection at:', promise, 'reason:', reason);
+// ===== GESTIONE ERRORI =====
+process.on('unhandledRejection', function(reason, promise) {
+  console.error('❌ Unhandled Rejection:', reason);
 });
 
-process.on('uncaughtException', (error) => {
+process.on('uncaughtException', function(error) {
   console.error('❌ Uncaught Exception:', error);
   process.exit(1);
 });
 
 // ===== AVVIO SERVER =====
-app.listen(PORT, '0.0.0.0', () => {
-  console.log('\n🚀 HYBRID MSY-ECWID SYNC SERVER v2.0 AVVIATO');
-  console.log('===============================================');
+app.listen(PORT, '0.0.0.0', function() {
+  console.log('\n🚀 MSY-ECWID SYNC SERVER v2.0 AVVIATO');
+  console.log('======================================');
   console.log(`🌐 Server: http://localhost:${PORT}`);
   console.log(`🎯 Modalità: ${CONFIG.SYNC_MODE}`);
-  console.log(`🏪 Store Ecwid: ${CONFIG.ECWID_STORE_ID}`);
-  console.log(`💰 Soglia prezzo: €${CONFIG.MIN_PRICE_THRESHOLD} (x${CONFIG.PRICE_MULTIPLIER})`);
-  console.log(`📦 Batch size: ${CONFIG.BATCH_SIZE} prodotti`);
-  console.log(`⏱️ Delay batch: ${CONFIG.BATCH_DELAY}ms`);
+  console.log(`🏪 Store: ${CONFIG.ECWID_STORE_ID}`);
+  console.log(`💰 Prezzi: MSY × ${CONFIG.PRICE_MULTIPLIER} (min €${CONFIG.MIN_PRICE_THRESHOLD})`);
   console.log('');
-  console.log('📋 API ENDPOINTS:');
-  console.log('   GET  /health        - Health check dettagliato');
-  console.log('   POST /sync          - Sincronizzazione completa');
-  console.log('   GET  /stats         - Statistiche avanzate');
-  console.log('   GET  /test-sources  - Test completo fonti dati');
-  console.log('   GET  /config        - Configurazione sistema');
+  console.log('📋 ENDPOINTS DISPONIBILI:');
+  console.log('   GET  /health        - Health check');
+  console.log('   POST /sync          - Sincronizzazione');
+  console.log('   GET  /stats         - Statistiche');
+  console.log('   GET  /test-sources  - Test fonti MSY');
+  console.log('   GET  /config        - Configurazione');
   console.log('');
-  console.log('⏰ Sync automatica: ogni giorno alle 6:00 AM (timezone Europe/Rome)');
-  console.log('✅ Sistema v2.0 pronto con parsing MSY corretto!');
+  console.log('⏰ Sync automatica: 6:00 AM ogni giorno');
+  console.log('✅ Sistema v2.0 pronto!');
 });
