@@ -18,14 +18,14 @@ const CONFIG = {
   ECWID_API_TOKEN: process.env.ECWID_API_TOKEN,
   ECWID_API_URL: `https://app.ecwid.com/api/v3/${process.env.ECWID_STORE_ID || '29517085'}`,
   
-  // PARAMETRI OTTIMIZZATI
+  // PARAMETRI OTTIMIZZATI PER PRESTAZIONI
   REQUIRE_IMAGES: false,
   MIN_PRICE_THRESHOLD: 15,
   PRICE_MULTIPLIER: 2,
-  BATCH_SIZE: 5,
-  BATCH_DELAY: 5000,
-  REQUEST_TIMEOUT: 45000,
-  USER_AGENT: 'MSY-Ecwid-Sync/2.0'
+  BATCH_SIZE: 3,                    // Ridotto per evitare rate limiting
+  BATCH_DELAY: 3000,                // Delay ottimizzato
+  REQUEST_TIMEOUT: 30000,           // Timeout ridotto
+  USER_AGENT: 'MSY-Ecwid-Sync/2.1'
 };
 
 // ===== UTILITY FUNCTIONS =====
@@ -58,10 +58,14 @@ function extractImages(product) {
   return images;
 }
 
-// ===== CLASSE SYNC PRINCIPALE =====
+// ===== CLASSE SYNC ASINCRONA =====
 class HybridMSYEcwidSync {
   constructor() {
     this.resetStats();
+    this.isRunning = false;           // Flag per processo in corso
+    this.lastReport = null;           // Ultimo report di sincronizzazione
+    this.lastError = null;            // Ultimo errore
+    this.lastSyncTime = null;         // Timestamp ultima sync
   }
 
   resetStats() {
@@ -85,7 +89,7 @@ class HybridMSYEcwidSync {
     this.errorSKUs = [];
   }
 
-  // FETCH CSV CON PARSING CORRETTO MSY
+  // FETCH CSV CON PARSING MSY CORRETTO
   async fetchCSVProducts() {
     try {
       console.log('📊 Recupero CSV MSY...');
@@ -102,7 +106,7 @@ class HybridMSYEcwidSync {
       }
       
       const csvData = await response.text();
-      console.log(`📊 CSV dimensione: ${csvData.length} caratteri`);
+      console.log(`📊 CSV dimensione: ${Math.round(csvData.length / 1024)}KB`);
       
       // PARSING SPECIFICO PER FORMATO MSY
       const parsed = Papa.parse(csvData, {
@@ -394,7 +398,7 @@ class HybridMSYEcwidSync {
     }
   }
 
-  // PROCESSAMENTO BATCH
+  // PROCESSAMENTO BATCH CON RATE LIMITING
   async processBatch(products) {
     const totalBatches = Math.ceil(products.length / CONFIG.BATCH_SIZE);
     
@@ -404,7 +408,7 @@ class HybridMSYEcwidSync {
       const currentBatch = Math.floor(i / CONFIG.BATCH_SIZE) + 1;
       const batch = products.slice(i, i + CONFIG.BATCH_SIZE);
       
-      console.log(`\n🚀 BATCH ${currentBatch}/${totalBatches} (${batch.length} prodotti)`);
+      console.log(`🚀 BATCH ${currentBatch}/${totalBatches}`);
       
       const self = this;
       await Promise.all(batch.map(function(product) {
@@ -449,11 +453,18 @@ class HybridMSYEcwidSync {
       await this.processBatch(result.products);
 
       this.stats.endTime = Date.now();
-      return this.generateReport();
+      const report = this.generateReport();
+      
+      // Salva report per endpoint /sync-status
+      this.lastReport = report;
+      this.lastSyncTime = new Date().toISOString();
+      
+      return report;
 
     } catch (error) {
       console.error('❌ ERRORE SYNC:', error.message);
       this.stats.endTime = Date.now();
+      this.lastError = error.message;
       throw error;
     }
   }
@@ -502,14 +513,14 @@ class HybridMSYEcwidSync {
 // ===== ISTANZA GLOBALE =====
 const syncService = new HybridMSYEcwidSync();
 
-// ===== MIDDLEWARE =====
+// ===== MIDDLEWARE EXPRESS =====
 app.use(express.json());
 app.use(function(req, res, next) {
   console.log(`${new Date().toISOString()} - ${req.method} ${req.path}`);
   next();
 });
 
-// ===== ROUTES API =====
+// ===== ROUTES API COMPLETE =====
 
 // HEALTHCHECK
 app.get('/health', function(req, res) {
@@ -517,14 +528,15 @@ app.get('/health', function(req, res) {
     status: 'OK', 
     timestamp: new Date().toISOString(),
     service: 'Hybrid MSY-Ecwid Sync',
-    version: '2.0.0',
+    version: '2.1.0',
     mode: CONFIG.SYNC_MODE,
     config: {
       storeId: CONFIG.ECWID_STORE_ID,
       hasToken: !!CONFIG.ECWID_API_TOKEN,
       minPrice: CONFIG.MIN_PRICE_THRESHOLD,
       priceMultiplier: CONFIG.PRICE_MULTIPLIER,
-      batchSize: CONFIG.BATCH_SIZE
+      batchSize: CONFIG.BATCH_SIZE,
+      async: true
     }
   });
 });
@@ -532,33 +544,82 @@ app.get('/health', function(req, res) {
 // ROOT
 app.get('/', function(req, res) {
   res.json({
-    message: 'Hybrid MSY-Ecwid Sync API v2.0',
-    endpoints: ['/health', '/sync', '/stats', '/test-sources', '/config'],
+    message: 'Hybrid MSY-Ecwid Sync API v2.1 - ASYNCHRONOUS',
+    endpoints: {
+      health: 'GET /health - Health check sistema',
+      sync: 'POST /sync - Avvia sincronizzazione asincrona', 
+      syncStatus: 'GET /sync-status - Stato sincronizzazione',
+      stats: 'GET /stats - Statistiche dettagliate',
+      testSources: 'GET /test-sources - Test connessioni MSY',
+      config: 'GET /config - Visualizza configurazione'
+    },
     timestamp: new Date().toISOString()
   });
 });
 
-// SINCRONIZZAZIONE
-app.post('/sync', async function(req, res) {
-  try {
-    console.log('\n🔄 AVVIO SINCRONIZZAZIONE MANUALE...');
-    const report = await syncService.sync();
-    res.json(report);
-  } catch (error) {
-    console.error('❌ ERRORE SYNC:', error.message);
-    res.status(500).json({
+// SINCRONIZZAZIONE ASINCRONA (RISOLVE ERROR 524)
+app.post('/sync', function(req, res) {
+  // Controlla se sync già in corso
+  if (syncService.isRunning) {
+    return res.status(429).json({
       success: false,
-      error: error.message,
+      message: "Sincronizzazione già in corso",
+      status: "running",
       timestamp: new Date().toISOString(),
-      stats: syncService.stats
+      checkStatus: "GET /sync-status per monitorare progresso"
     });
   }
+  
+  // RISPOSTA IMMEDIATA (< 1 secondo) - RISOLVE ERROR 524
+  res.json({
+    success: true,
+    message: "Sincronizzazione avviata in background",
+    timestamp: new Date().toISOString(),
+    statusUrl: "/sync-status",
+    estimatedDuration: "2-5 minuti",
+    note: "Monitora con GET /sync-status per progresso"
+  });
+  
+  // AVVIA SYNC IN BACKGROUND (NON BLOCCA HTTP)
+  syncService.isRunning = true;
+  syncService.lastError = null;
+  
+  setImmediate(async function() {
+    try {
+      console.log('🚀 Sync MSY→Ecwid avviata in background...');
+      const report = await syncService.sync();
+      console.log('✅ Sync completata con successo:', report.stats);
+    } catch (error) {
+      console.error('❌ Errore sync background:', error.message);
+      syncService.lastError = error.message;
+    } finally {
+      syncService.isRunning = false;
+    }
+  });
 });
 
-// STATISTICHE
+// STATUS DELLA SINCRONIZZAZIONE IN TEMPO REALE
+app.get('/sync-status', function(req, res) {
+  const currentTime = new Date().toISOString();
+  
+  res.json({
+    isRunning: syncService.isRunning || false,
+    status: syncService.isRunning ? 'running' : 'idle',
+    lastSyncTime: syncService.lastSyncTime,
+    lastReport: syncService.lastReport,
+    lastError: syncService.lastError,
+    currentStats: syncService.stats,
+    progress: syncService.stats.total > 0 ? 
+      Math.round((syncService.stats.processed / syncService.stats.total) * 100) : 0,
+    timestamp: currentTime
+  });
+});
+
+// STATISTICHE DETTAGLIATE
 app.get('/stats', function(req, res) {
   res.json({
     currentStats: syncService.stats,
+    isRunning: syncService.isRunning || false,
     errorCount: syncService.errorSKUs.length,
     recentErrors: syncService.errorSKUs.slice(-5),
     config: {
@@ -566,17 +627,20 @@ app.get('/stats', function(req, res) {
       storeId: CONFIG.ECWID_STORE_ID,
       batchSize: CONFIG.BATCH_SIZE,
       minPriceThreshold: CONFIG.MIN_PRICE_THRESHOLD,
-      priceMultiplier: CONFIG.PRICE_MULTIPLIER
+      priceMultiplier: CONFIG.PRICE_MULTIPLIER,
+      requireImages: CONFIG.REQUIRE_IMAGES,
+      batchDelay: CONFIG.BATCH_DELAY
     },
     timestamp: new Date().toISOString()
   });
 });
 
-// TEST FONTI DATI
+// TEST FONTI DATI MSY E ECWID
 app.get('/test-sources', async function(req, res) {
   const results = { 
     timestamp: new Date().toISOString(), 
-    tests: {}
+    tests: {},
+    summary: { accessible: 0, failed: 0 }
   };
   
   // Test CSV
@@ -589,14 +653,18 @@ app.get('/test-sources', async function(req, res) {
     results.tests.csv = {
       status: csvResponse.ok ? 'OK' : 'ERROR',
       statusCode: csvResponse.status,
-      url: CONFIG.DATA_SOURCES.CSV_URL
+      url: CONFIG.DATA_SOURCES.CSV_URL,
+      contentLength: csvResponse.headers.get('content-length')
     };
+    if (csvResponse.ok) results.summary.accessible++;
+    else results.summary.failed++;
   } catch (error) {
     results.tests.csv = {
       status: 'ERROR',
       error: error.message,
       url: CONFIG.DATA_SOURCES.CSV_URL
     };
+    results.summary.failed++;
   }
   
   // Test JSON
@@ -611,22 +679,61 @@ app.get('/test-sources', async function(req, res) {
       statusCode: jsonResponse.status,
       url: CONFIG.DATA_SOURCES.JSON_URL
     };
+    if (jsonResponse.ok) results.summary.accessible++;
+    else results.summary.failed++;
   } catch (error) {
     results.tests.json = {
       status: 'ERROR',
       error: error.message,
       url: CONFIG.DATA_SOURCES.JSON_URL
     };
+    results.summary.failed++;
+  }
+  
+  // Test token Ecwid
+  try {
+    if (CONFIG.ECWID_API_TOKEN) {
+      const ecwidResponse = await fetch(`${CONFIG.ECWID_API_URL}/products?limit=1`, {
+        headers: {
+          'Authorization': `Bearer ${CONFIG.ECWID_API_TOKEN}`,
+          'User-Agent': CONFIG.USER_AGENT
+        },
+        timeout: 10000
+      });
+      results.tests.ecwid = {
+        status: ecwidResponse.ok ? 'OK' : 'ERROR',
+        statusCode: ecwidResponse.status,
+        url: CONFIG.ECWID_API_URL,
+        hasValidToken: true
+      };
+      if (ecwidResponse.ok) results.summary.accessible++;
+      else results.summary.failed++;
+    } else {
+      results.tests.ecwid = {
+        status: 'ERROR',
+        error: 'ECWID_API_TOKEN non configurato',
+        hasValidToken: false
+      };
+      results.summary.failed++;
+    }
+  } catch (error) {
+    results.tests.ecwid = {
+      status: 'ERROR',
+      error: error.message,
+      hasValidToken: !!CONFIG.ECWID_API_TOKEN
+    };
+    results.summary.failed++;
   }
   
   res.json(results);
 });
 
-// CONFIGURAZIONE
+// CONFIGURAZIONE SISTEMA
 app.get('/config', function(req, res) {
   res.json({
-    version: '2.0.0',
+    version: '2.1.0',
     mode: CONFIG.SYNC_MODE,
+    async: true,
     dataSources: CONFIG.DATA_SOURCES,
     ecwid: {
       storeId: CONFIG.ECWID_STORE_ID,
@@ -647,21 +754,26 @@ app.get('/config', function(req, res) {
   });
 });
 
-// ===== CRON JOB =====
+// ===== CRON JOB AUTOMATICO =====
 cron.schedule('0 6 * * *', async function() {
-  try {
-    console.log('\n⏰ SINCRONIZZAZIONE AUTOMATICA (6:00 AM)...');
-    await syncService.sync();
-  } catch (error) {
-    console.error('❌ Errore sync automatica:', error.message);
+  if (!syncService.isRunning) {
+    try {
+      console.log('\n⏰ SINCRONIZZAZIONE AUTOMATICA (6:00 AM)...');
+      syncService.isRunning = true;
+      await syncService.sync();
+    } catch (error) {
+      console.error('❌ Errore sync automatica:', error.message);
+    } finally {
+      syncService.isRunning = false;
+    }
   }
 }, {
   timezone: "Europe/Rome"
 });
 
-// ===== GESTIONE ERRORI =====
+// ===== GESTIONE ERRORI GLOBALI =====
 process.on('unhandledRejection', function(reason, promise) {
-  console.error('❌ Unhandled Rejection:', reason);
+  console.error('❌ Unhandled Rejection at:', promise, 'reason:', reason);
 });
 
 process.on('uncaughtException', function(error) {
@@ -671,20 +783,23 @@ process.on('uncaughtException', function(error) {
 
 // ===== AVVIO SERVER =====
 app.listen(PORT, '0.0.0.0', function() {
-  console.log('\n🚀 MSY-ECWID SYNC SERVER v2.0 AVVIATO');
-  console.log('======================================');
+  console.log('\n🚀 MSY-ECWID SYNC SERVER v2.1 AVVIATO');
+  console.log('===============================================');
   console.log(`🌐 Server: http://localhost:${PORT}`);
-  console.log(`🎯 Modalità: ${CONFIG.SYNC_MODE}`);
-  console.log(`🏪 Store: ${CONFIG.ECWID_STORE_ID}`);
+  console.log(`🎯 Modalità: ${CONFIG.SYNC_MODE} (ASYNCHRONOUS)`);
+  console.log(`🏪 Store Ecwid: ${CONFIG.ECWID_STORE_ID}`);
   console.log(`💰 Prezzi: MSY × ${CONFIG.PRICE_MULTIPLIER} (min €${CONFIG.MIN_PRICE_THRESHOLD})`);
+  console.log(`📦 Batch: ${CONFIG.BATCH_SIZE} prodotti ogni ${CONFIG.BATCH_DELAY}ms`);
   console.log('');
-  console.log('📋 ENDPOINTS DISPONIBILI:');
-  console.log('   GET  /health        - Health check');
-  console.log('   POST /sync          - Sincronizzazione');
-  console.log('   GET  /stats         - Statistiche');
-  console.log('   GET  /test-sources  - Test fonti MSY');
-  console.log('   GET  /config        - Configurazione');
+  console.log('📋 API ENDPOINTS:');
+  console.log('   GET  /health        - Health check dettagliato');
+  console.log('   POST /sync          - ⚡ Avvia sync ASINCRONO');
+  console.log('   GET  /sync-status   - 📊 Monitora progresso sync');
+  console.log('   GET  /stats         - 📈 Statistiche complete');
+  console.log('   GET  /test-sources  - 🔍 Test fonti MSY + Ecwid');
+  console.log('   GET  /config        - ⚙️ Configurazione sistema');
   console.log('');
-  console.log('⏰ Sync automatica: 6:00 AM ogni giorno');
-  console.log('✅ Sistema v2.0 pronto!');
+  console.log('⏰ Sync automatica: ogni giorno alle 6:00 AM');
+  console.log('🛡️ Protezione Error 524: SYNC ASINCRONO ATTIVO');
+  console.log('✅ Sistema v2.1 pronto per sincronizzazione!');
 });
