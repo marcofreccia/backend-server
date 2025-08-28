@@ -98,18 +98,35 @@ class MSYEcwidSync {
   }
 
   // ===== VALIDAZIONE PRODOTTO COMPLETA =====
-  validateProduct(product) {
-    // 1. CONTROLLO IMMAGINI (OPZIONALE)
-    const validImages = this.validateImages(product);
-    if (CONFIG.REQUIRE_IMAGES && validImages.length === 0) {
-      this.stats.reasons.noImages++;
-      return {
-        valid: false,
-        reason: 'NO_IMAGES',
-        detail: `Prodotto "${product.name}" senza immagini valide`,
-        images: []
-      };
+validateProduct(product) {
+  // 1. CONTROLLO IMMAGINI (OPZIONALE)
+  const validImages = this.validateImages(product);
+  
+  // 2. CONTROLLO E RADDOPPIO PREZZO  
+  const finalPrice = this.calculatePrice(product.price);
+  
+  // 3. CONTROLLO SOGLIA MINIMA €20 (DOPO RADDOPPIO!)
+  
+  // 🔥 INSERISCI LA CORREZIONE QUI - PRIMA DEL RETURN:
+  
+  // 🔥 NUOVO: Validazione quantity numerica
+  if (product.stock !== undefined && product.stock !== null) {
+    if (typeof product.stock !== 'number' || isNaN(product.stock) || product.stock < 0) {
+      product.stock = 0; // Imposta a 0 se non valido
+    } else {
+      product.stock = Math.floor(product.stock); // Assicura intero
     }
+  } else {
+    product.stock = 0; // Default se mancante
+  }
+  
+  return {
+    valid: true,
+    price: finalPrice,
+    originalPrice: product.price,
+    images: validImages
+  };
+}
 
     // 2. CONTROLLO E RADDOPPIO PREZZO
     const finalPrice = this.calculatePrice(product.price);
@@ -207,44 +224,48 @@ class MSYEcwidSync {
     }
   }
 
-  // ===== CREAZIONE PAYLOAD ECWID - ANTI-HOMEPAGE =====
-  createEcwidPayload(product, validation) {
-    const ecwidCategoryId = this.mapCategory(product.category);
+  // ===== CREAZIONE PAYLOAD ECWID - CORREZIONE QUANTITY =====
+createEcwidPayload(product, validation) {
+  const ecwidCategoryId = this.mapCategory(product.category);
 
-    // PAYLOAD PULITO - ZERO CAMPI DI EVIDENZA
-    const payload = {
-      name: product.name || 'Prodotto MSY',
-      description: product.description || '',
-      price: validation.price, // PREZZO SEMPRE RADDOPPIATO
-      categoryIds: [ecwidCategoryId], // SEMPRE ARRAY DI ID
-      sku: product.sku || `MSY-${product.id || Date.now()}`,
-      unlimited: false,
-      quantity: product.stock || 0,
-      enabled: true,
-      
-      // ❌❌❌ ANTI-HOMEPAGE - NESSUN CAMPO DI EVIDENZA ❌❌❌
-      // NON INCLUDERE MAI QUESTI CAMPI:
-      // isFeatured: false,
-      // showOnFrontpage: false,
-      // featured: false,
-      // isTopProduct: false,
-      // showInStorefront: false,
-
-      // GALLERIA IMMAGINI - Le immagini saranno caricate separatamente
-      media: {
-        images: []
-      }
-    };
-
-    // Pulizia definitiva campi undefined/null
-    Object.keys(payload).forEach(key => {
-      if (payload[key] === undefined || payload[key] === null) {
-        delete payload[key];
-      }
-    });
-
-    return payload;
+  // 🔥 CORREZIONE CRITICA: Assicura che quantity sia SEMPRE numerico
+  let quantity = 0;
+  if (typeof product.stock === 'number' && !isNaN(product.stock) && product.stock >= 0) {
+    quantity = Math.floor(product.stock); // Intero positivo
   }
+
+  // PAYLOAD PULITO - ZERO CAMPI DI EVIDENZA
+  const payload = {
+    name: product.name || 'Prodotto MSY',
+    description: product.description || '',
+    price: validation.price, // PREZZO SEMPRE RADDOPPIATO
+    categoryIds: [ecwidCategoryId], // SEMPRE ARRAY DI ID
+    sku: product.sku || `MSY-${product.id || Date.now()}`,
+    unlimited: false,
+    quantity: quantity, // 🔥 SEMPRE NUMERICO INTERO ≥ 0
+    enabled: true,
+    
+    // ❌❌❌ ANTI-HOMEPAGE - NESSUN CAMPO DI EVIDENZA ❌❌❌
+    // NON INCLUDERE MAI QUESTI CAMPI:
+    // isFeatured: false,
+    // showOnFrontpage: false,
+    // featured: false,
+    
+    // GALLERIA IMMAGINI - Le immagini saranno caricate separatamente
+    media: {
+      images: []
+    }
+  };
+
+  // Pulizia definitiva campi undefined/null
+  Object.keys(payload).forEach(key => {
+    if (payload[key] === undefined || payload[key] === null) {
+      delete payload[key];
+    }
+  });
+
+  return payload;
+}
 
   // ===== IMPORT SU ECWID CON RETRY E GESTIONE 409 =====
   async importToEcwid(payload, productId, validation) {
