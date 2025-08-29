@@ -1,6 +1,24 @@
 const axios = require('axios');
+const express = require('express');
+const cors = require('cors');
+const helmet = require('helmet');
 const fs = require('fs').promises;
 const path = require('path');
+
+const app = express();
+const PORT = process.env.PORT || 3000;
+
+// Middleware di sicurezza e parsing
+app.use(helmet());
+app.use(cors());
+app.use(express.json({ limit: '100mb' }));
+app.use(express.urlencoded({ extended: true }));
+
+// Logging middleware
+app.use((req, res, next) => {
+    console.log(`${new Date().toISOString()} - ${req.method} ${req.path}`);
+    next();
+});
 
 class EcwidSyncManager {
     constructor(config) {
@@ -9,9 +27,9 @@ class EcwidSyncManager {
             apiToken: config.apiToken,
             baseUrl: `https://app.ecwid.com/api/v3/${config.storeId}`,
             maxRetries: 5,
-            retryDelay: 1000, // Start with 1 second
+            retryDelay: 1000,
             batchSize: 25,
-            requestDelay: 250, // 4 requests per second max
+            requestDelay: 250,
             logFile: 'ecwid-sync.log',
             ...config
         };
@@ -22,27 +40,34 @@ class EcwidSyncManager {
             updated: 0,
             ignored: 0,
             error: 0,
-            errorSKUs: []
+            errorSKUs: [],
+            startTime: new Date().toISOString()
         };
         
         this.lastProcessedIndex = 0;
+        this.logs = [];
     }
 
-    // Enhanced logging
+    // Logging avanzato
     async log(message, level = 'INFO') {
         const timestamp = new Date().toISOString();
-        const logMessage = `[${timestamp}] [${level}] ${message}\n`;
+        const logEntry = {
+            timestamp,
+            level,
+            message,
+            stats: { ...this.stats }
+        };
         
-        console.log(logMessage.trim());
+        this.logs.push(logEntry);
+        console.log(`[${timestamp}] [${level}] ${message}`);
         
-        try {
-            await fs.appendFile(this.config.logFile, logMessage);
-        } catch (error) {
-            console.error('Failed to write to log file:', error.message);
+        // Mantieni solo gli ultimi 1000 log in memoria
+        if (this.logs.length > 1000) {
+            this.logs = this.logs.slice(-1000);
         }
     }
 
-    // Exponential backoff retry wrapper
+    // Retry con backoff esponenziale
     async withRetry(operation, context = '') {
         let lastError;
         
@@ -58,13 +83,22 @@ class EcwidSyncManager {
             } catch (error) {
                 lastError = error;
                 
-                // Don't retry on certain errors
-                if (error.response?.status === 404 || error.response?.status === 401) {
+                // Non fare retry su errori definitivi
+                if (error.response?.status === 404 || 
+                    error.response?.status === 401 || 
+                    error.response?.status === 403) {
                     throw error;
                 }
                 
-                const delay = this.config.retryDelay * Math.pow(2, attempt - 1);
-                await this.log(`⚠ ${context} failed (attempt ${attempt}/${this.config.maxRetries}): ${error.message}. Retrying in ${delay}ms...`, 'WARN');
+                const delay = Math.min(
+                    this.config.retryDelay * Math.pow(2, attempt - 1),
+                    30000 // Max 30 secondi
+                );
+                
+                await this.log(
+                    `⚠ ${context} failed (attempt ${attempt}/${this.config.maxRetries}): ${error.message}. Retrying in ${delay}ms...`, 
+                    'WARN'
+                );
                 
                 if (attempt < this.config.maxRetries) {
                     await this.sleep(delay);
@@ -75,7 +109,7 @@ class EcwidSyncManager {
         throw lastError;
     }
 
-    // Enhanced API request method
+    // Request API con gestione errori avanzata
     async makeRequest(method, endpoint, data = null, headers = {}) {
         const url = `${this.config.baseUrl}${endpoint}`;
         
@@ -85,10 +119,11 @@ class EcwidSyncManager {
             headers: {
                 'Authorization': `Bearer ${this.config.apiToken}`,
                 'Content-Type': 'application/json',
+                'User-Agent': 'MSY-Ecwid-Sync/1.0',
                 ...headers
             },
-            timeout: 30000, // 30 second timeout
-            validateStatus: (status) => status < 500 // Don't throw on 4xx errors
+            timeout: 60000,
+            validateStatus: (status) => status < 500
         };
         
         if (data) {
@@ -97,80 +132,96 @@ class EcwidSyncManager {
         
         const response = await axios(config);
         
-        // Handle non-JSON responses (the main issue you encountered)
-        if (response.headers['content-type']?.includes('text/html')) {
-            throw new Error(`Server returned HTML instead of JSON. Status: ${response.status}, URL: ${url}`);
+        // Gestione risposte HTML invece di JSON
+        const contentType = response.headers['content-type'] || '';
+        if (contentType.includes('text/html')) {
+            throw new Error(
+                `Server returned HTML instead of JSON. Status: ${response.status}, URL: ${url}`
+            );
         }
         
-        // Validate JSON response
+        // Validazione JSON response
         if (typeof response.data !== 'object') {
             throw new Error(`Invalid JSON response from ${url}`);
         }
         
+        // Gestione errori HTTP 4xx
         if (response.status >= 400) {
-            throw new Error(`HTTP ${response.status}: ${response.data?.errorMessage || 'Unknown error'}`);
+            const errorMsg = response.data?.errorMessage || 
+                            response.data?.message || 
+                            `HTTP ${response.status}`;
+            throw new Error(errorMsg);
         }
         
         return response.data;
     }
 
-    // Test API connectivity
+    // Test connessione API
     async testConnection() {
         try {
             await this.log('Testing API connection...');
             const profile = await this.makeRequest('GET', '/profile');
             await this.log(`✓ Connected to store: ${profile.generalInfo?.storeUrl || 'Unknown'}`);
-            return true;
+            return { success: true, store: profile.generalInfo };
         } catch (error) {
             await this.log(`✗ API connection failed: ${error.message}`, 'ERROR');
-            return false;
+            return { success: false, error: error.message };
         }
     }
 
-    // Search for existing product
+    // Ricerca prodotto esistente
     async searchProduct(sku) {
         return await this.withRetry(async () => {
-            const data = await this.makeRequest('GET', `/products?sku=${encodeURIComponent(sku)}`);
+            const data = await this.makeRequest('GET', `/products?sku=${encodeURIComponent(sku)}&limit=1`);
             return data.items?.[0] || null;
         }, `Search product ${sku}`);
     }
 
-    // Validate and process image URL
-    async processImageUrl(imageUrl) {
+    // Validazione e processamento URL immagini
+    async processImageUrl(imageUrl, productSku) {
         if (!imageUrl || typeof imageUrl !== 'string') {
             return null;
         }
         
-        // Validate URL format
+        // Validazione formato URL
         try {
             new URL(imageUrl);
         } catch {
-            await this.log(`Invalid image URL format: ${imageUrl}`, 'WARN');
+            await this.log(`Invalid image URL format for ${productSku}: ${imageUrl}`, 'WARN');
             return null;
         }
         
-        // Check if image is accessible
+        // Test accessibilità immagine
         try {
-            const response = await axios.head(imageUrl, { timeout: 5000 });
-            const contentType = response.headers['content-type'];
+            const response = await axios.head(imageUrl, { 
+                timeout: 10000,
+                maxRedirects: 3
+            });
             
+            const contentType = response.headers['content-type'];
             if (!contentType?.startsWith('image/')) {
-                await this.log(`URL is not an image: ${imageUrl} (${contentType})`, 'WARN');
+                await this.log(`URL is not an image for ${productSku}: ${imageUrl} (${contentType})`, 'WARN');
+                return null;
+            }
+            
+            const contentLength = parseInt(response.headers['content-length'] || '0');
+            if (contentLength > 20 * 1024 * 1024) { // Max 20MB
+                await this.log(`Image too large for ${productSku}: ${imageUrl} (${contentLength} bytes)`, 'WARN');
                 return null;
             }
             
             return imageUrl;
         } catch (error) {
-            await this.log(`Image URL not accessible: ${imageUrl} - ${error.message}`, 'WARN');
+            await this.log(`Image URL not accessible for ${productSku}: ${imageUrl} - ${error.message}`, 'WARN');
             return null;
         }
     }
 
-    // Upload product image
-    async uploadProductImage(productId, imageUrl, isMain = false) {
+    // Upload immagine prodotto
+    async uploadProductImage(productId, imageUrl, isMain = false, productSku = '') {
         if (!imageUrl) return null;
         
-        const validatedUrl = await this.processImageUrl(imageUrl);
+        const validatedUrl = await this.processImageUrl(imageUrl, productSku);
         if (!validatedUrl) return null;
         
         return await this.withRetry(async () => {
@@ -178,53 +229,59 @@ class EcwidSyncManager {
                 ? `/products/${productId}/image`
                 : `/products/${productId}/gallery`;
             
-            const imageData = {
-                externalUrl: validatedUrl
-            };
+            const imageData = { externalUrl: validatedUrl };
             
-            return await this.makeRequest('POST', endpoint, imageData);
-        }, `Upload image for product ${productId}`);
+            const result = await this.makeRequest('POST', endpoint, imageData);
+            await this.log(`✓ ${isMain ? 'Main' : 'Gallery'} image uploaded for ${productSku}`);
+            return result;
+        }, `Upload ${isMain ? 'main' : 'gallery'} image for product ${productId}`);
     }
 
-    // Create or update product
+    // Creazione/aggiornamento prodotto
     async upsertProduct(productData) {
         const sku = productData.sku;
         let existingProduct = null;
         let isUpdate = false;
         
         try {
-            // Search for existing product
+            // Ricerca prodotto esistente
             existingProduct = await this.searchProduct(sku);
             isUpdate = !!existingProduct;
             
-            // Prepare product data
+            // Preparazione dati prodotto
             const productPayload = {
                 name: productData.name || 'Untitled Product',
                 sku: sku,
                 price: parseFloat(productData.price) || 0,
                 enabled: productData.enabled !== false,
                 description: productData.description || '',
-                weight: productData.weight || 0,
+                weight: parseFloat(productData.weight) || 0,
+                quantity: parseInt(productData.quantity) || 0,
+                categoryIds: productData.categoryIds || [],
+                attributes: productData.attributes || [],
                 ...productData
             };
             
-            // Remove image URLs from main payload - handle separately
-            const mainImageUrl = productPayload.defaultDisplayedPriceFormatted;
+            // Estrazione URLs immagini
+            const mainImageUrl = productPayload.mainImageUrl || productPayload.defaultDisplayedPriceFormatted;
             const galleryImages = productPayload.galleryImages || [];
+            
+            // Rimozione campi immagine dal payload principale
+            delete productPayload.mainImageUrl;
             delete productPayload.defaultDisplayedPriceFormatted;
             delete productPayload.galleryImages;
             
             let result;
             
             if (isUpdate) {
-                // Update existing product
+                // Aggiornamento prodotto esistente
                 result = await this.withRetry(async () => {
                     return await this.makeRequest('PUT', `/products/${existingProduct.id}`, productPayload);
                 }, `Update product ${sku}`);
                 
                 this.stats.updated++;
             } else {
-                // Create new product
+                // Creazione nuovo prodotto
                 result = await this.withRetry(async () => {
                     return await this.makeRequest('POST', '/products', productPayload);
                 }, `Create product ${sku}`);
@@ -234,23 +291,22 @@ class EcwidSyncManager {
             
             const productId = result.id || existingProduct?.id;
             
-            // Handle images separately with error tolerance
+            // Gestione immagini con tolleranza agli errori
             if (productId) {
-                // Upload main image
+                // Upload immagine principale
                 if (mainImageUrl) {
                     try {
-                        await this.uploadProductImage(productId, mainImageUrl, true);
-                        await this.log(`✓ Main image uploaded for ${sku}`);
+                        await this.uploadProductImage(productId, mainImageUrl, true, sku);
                     } catch (error) {
                         await this.log(`⚠ Failed to upload main image for ${sku}: ${error.message}`, 'WARN');
                     }
                 }
                 
-                // Upload gallery images
-                for (let i = 0; i < galleryImages.length && i < 10; i++) {
+                // Upload immagini gallery
+                for (let i = 0; i < Math.min(galleryImages.length, 10); i++) {
                     try {
-                        await this.uploadProductImage(productId, galleryImages[i], false);
-                        await this.sleep(100); // Small delay between images
+                        await this.uploadProductImage(productId, galleryImages[i], false, sku);
+                        await this.sleep(200); // Pausa tra upload immagini
                     } catch (error) {
                         await this.log(`⚠ Failed to upload gallery image ${i+1} for ${sku}: ${error.message}`, 'WARN');
                     }
@@ -260,7 +316,12 @@ class EcwidSyncManager {
             this.stats.success++;
             await this.log(`✓ ${isUpdate ? 'Updated' : 'Created'} product: ${sku}`);
             
-            return result;
+            return {
+                success: true,
+                action: isUpdate ? 'updated' : 'created',
+                productId,
+                sku
+            };
             
         } catch (error) {
             this.stats.error++;
@@ -272,27 +333,31 @@ class EcwidSyncManager {
             });
             
             await this.log(`✗ Failed to process ${sku}: ${error.message}`, 'ERROR');
-            throw error;
+            return {
+                success: false,
+                error: error.message,
+                sku
+            };
         }
     }
 
-    // Process products in batches
-    async syncProducts(products) {
+    // Sincronizzazione prodotti in batch
+    async syncProducts(products, onProgress = null) {
         if (!Array.isArray(products) || products.length === 0) {
             throw new Error('No products provided for sync');
         }
         
-        // Test connection first
-        const connectionOk = await this.testConnection();
-        if (!connectionOk) {
-            throw new Error('Cannot establish API connection');
+        // Test connessione iniziale
+        const connectionTest = await this.testConnection();
+        if (!connectionTest.success) {
+            throw new Error(`Cannot establish API connection: ${connectionTest.error}`);
         }
         
         await this.log(`Starting sync of ${products.length} products in batches of ${this.config.batchSize}`);
         
-        // Resume from last processed index if available
         const startIndex = this.lastProcessedIndex;
         const totalBatches = Math.ceil((products.length - startIndex) / this.config.batchSize);
+        const results = [];
         
         for (let batchIndex = 0; batchIndex < totalBatches; batchIndex++) {
             const batchStart = startIndex + (batchIndex * this.config.batchSize);
@@ -301,63 +366,48 @@ class EcwidSyncManager {
             
             await this.log(`Processing batch ${batchIndex + 1}/${totalBatches} (products ${batchStart + 1}-${batchEnd})`);
             
-            // Process batch with individual error handling
+            // Processamento batch con gestione errori individuali
             for (const product of batch) {
-                try {
-                    await this.upsertProduct(product);
-                    this.lastProcessedIndex++;
-                } catch (error) {
-                    // Continue processing even if one product fails
-                    await this.log(`Skipping product due to error, continuing with batch...`, 'WARN');
+                const result = await this.upsertProduct(product);
+                results.push(result);
+                this.lastProcessedIndex++;
+                
+                // Callback progresso opzionale
+                if (onProgress) {
+                    onProgress({
+                        processed: this.lastProcessedIndex,
+                        total: products.length,
+                        current: product.sku,
+                        stats: { ...this.stats }
+                    });
                 }
                 
-                // Rate limiting delay
+                // Rate limiting
                 await this.sleep(this.config.requestDelay);
             }
             
-            // Save progress
-            await this.saveProgress();
-            
-            // Batch delay to avoid overwhelming the API
+            // Pausa tra batch
             if (batchIndex < totalBatches - 1) {
                 await this.log(`Batch ${batchIndex + 1} completed. Waiting before next batch...`);
-                await this.sleep(2000); // 2 second delay between batches
+                await this.sleep(2000);
             }
         }
         
-        await this.generateReport();
-        return this.stats;
-    }
-
-    // Save progress to file
-    async saveProgress() {
-        const progressData = {
-            lastProcessedIndex: this.lastProcessedIndex,
-            stats: this.stats,
-            timestamp: new Date().toISOString()
+        const finalReport = await this.generateReport();
+        return {
+            success: true,
+            summary: finalReport.summary,
+            results,
+            errors: this.stats.errorSKUs,
+            logs: this.logs
         };
-        
-        try {
-            await fs.writeFile('sync-progress.json', JSON.stringify(progressData, null, 2));
-        } catch (error) {
-            await this.log(`Failed to save progress: ${error.message}`, 'WARN');
-        }
     }
 
-    // Load previous progress
-    async loadProgress() {
-        try {
-            const progressData = JSON.parse(await fs.readFile('sync-progress.json', 'utf8'));
-            this.lastProcessedIndex = progressData.lastProcessedIndex || 0;
-            await this.log(`Resumed from product index: ${this.lastProcessedIndex}`);
-        } catch (error) {
-            await this.log('No previous progress found, starting from beginning');
-            this.lastProcessedIndex = 0;
-        }
-    }
-
-    // Generate final report
+    // Generazione report finale
     async generateReport() {
+        const endTime = new Date().toISOString();
+        const duration = Date.now() - Date.parse(this.stats.startTime);
+        
         const report = {
             summary: {
                 success: this.stats.success,
@@ -365,77 +415,238 @@ class EcwidSyncManager {
                 updated: this.stats.updated,
                 ignored: this.stats.ignored,
                 error: this.stats.error,
-                total_processed: this.stats.success + this.stats.error
+                total_processed: this.stats.success + this.stats.error,
+                duration_ms: duration,
+                start_time: this.stats.startTime,
+                end_time: endTime
             },
             errors: this.stats.errorSKUs,
-            timestamp: new Date().toISOString()
+            logs: this.logs.slice(-50) // Ultimi 50 log
         };
         
-        const reportFile = `sync-report-${Date.now()}.json`;
-        await fs.writeFile(reportFile, JSON.stringify(report, null, 2));
-        
         await this.log(`\n=== SYNC COMPLETED ===`);
+        await this.log(`Duration: ${(duration / 1000).toFixed(2)}s`);
         await this.log(`Total Processed: ${report.summary.total_processed}`);
-        await this.log(`Successful: ${report.summary.success}`);
-        await this.log(`- Created: ${report.summary.created}`);
-        await this.log(`- Updated: ${report.summary.updated}`);
+        await this.log(`Successful: ${report.summary.success} (Created: ${report.summary.created}, Updated: ${report.summary.updated})`);
         await this.log(`Errors: ${report.summary.error}`);
-        await this.log(`Report saved to: ${reportFile}`);
         
         return report;
     }
 
-    // Utility method for delays
+    // Utility sleep
     async sleep(ms) {
         return new Promise(resolve => setTimeout(resolve, ms));
     }
-}
 
-// Usage Example
-async function main() {
-    const syncManager = new EcwidSyncManager({
-        storeId: 'YOUR_STORE_ID',
-        apiToken: 'YOUR_API_TOKEN',
-        batchSize: 25, // Smaller batches for stability
-        maxRetries: 5,
-        requestDelay: 300, // Slightly slower to avoid rate limits
-    });
-    
-    try {
-        // Load any previous progress
-        await syncManager.loadProgress();
-        
-        // Your product data array
-        const products = [
-            {
-                sku: 'PRODUCT-001',
-                name: 'Sample Product',
-                price: 29.99,
-                description: 'Product description',
-                defaultDisplayedPriceFormatted: 'https://example.com/image.jpg',
-                galleryImages: [
-                    'https://example.com/gallery1.jpg',
-                    'https://example.com/gallery2.jpg'
-                ],
-                enabled: true
-            },
-            // ... more products
-        ];
-        
-        // Start sync
-        const results = await syncManager.syncProducts(products);
-        console.log('Sync completed successfully:', results.summary);
-        
-    } catch (error) {
-        console.error('Sync failed:', error.message);
-        await syncManager.log(`FATAL ERROR: ${error.message}`, 'ERROR');
+    // Get current status
+    getStatus() {
+        return {
+            stats: { ...this.stats },
+            lastProcessedIndex: this.lastProcessedIndex,
+            recentLogs: this.logs.slice(-10)
+        };
     }
 }
 
-// Export for use as module
-module.exports = { EcwidSyncManager };
+// === API ENDPOINTS ===
 
-// Run if called directly
-if (require.main === module) {
-    main().catch(console.error);
-}
+// Health check per Railway
+app.get('/health', (req, res) => {
+    res.status(200).json({ 
+        status: 'OK', 
+        timestamp: new Date().toISOString(),
+        service: 'Ecwid Sync Server',
+        version: '1.0.0'
+    });
+});
+
+// Status generale del servizio
+app.get('/api/status', (req, res) => {
+    res.json({
+        service: 'Ecwid Sync Server',
+        status: 'running',
+        timestamp: new Date().toISOString(),
+        version: '1.0.0',
+        endpoints: {
+            sync: 'POST /api/sync',
+            test: 'POST /api/test-connection',
+            status: 'GET /api/status',
+            health: 'GET /health'
+        }
+    });
+});
+
+// Test connessione Ecwid
+app.post('/api/test-connection', async (req, res) => {
+    try {
+        const { storeId, apiToken } = req.body;
+        
+        if (!storeId || !apiToken) {
+            return res.status(400).json({
+                error: 'Missing required fields: storeId, apiToken'
+            });
+        }
+
+        const syncManager = new EcwidSyncManager({ storeId, apiToken });
+        const result = await syncManager.testConnection();
+        
+        if (result.success) {
+            res.json({
+                success: true,
+                message: 'Connection successful',
+                store: result.store,
+                timestamp: new Date().toISOString()
+            });
+        } else {
+            res.status(400).json({
+                success: false,
+                error: result.error,
+                timestamp: new Date().toISOString()
+            });
+        }
+
+    } catch (error) {
+        console.error('Connection test error:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Connection test failed',
+            message: error.message,
+            timestamp: new Date().toISOString()
+        });
+    }
+});
+
+// Sincronizzazione principale
+app.post('/api/sync', async (req, res) => {
+    try {
+        const { storeId, apiToken, products, options = {} } = req.body;
+        
+        if (!storeId || !apiToken || !products) {
+            return res.status(400).json({
+                error: 'Missing required fields: storeId, apiToken, products',
+                received: Object.keys(req.body)
+            });
+        }
+
+        if (!Array.isArray(products) || products.length === 0) {
+            return res.status(400).json({
+                error: 'Products must be a non-empty array',
+                received: typeof products
+            });
+        }
+
+        const syncManager = new EcwidSyncManager({
+            storeId,
+            apiToken,
+            batchSize: options.batchSize || 25,
+            maxRetries: options.maxRetries || 5,
+            requestDelay: options.requestDelay || 300
+        });
+
+        console.log(`Starting sync for ${products.length} products...`);
+        
+        const results = await syncManager.syncProducts(products);
+        
+        res.json({
+            success: true,
+            message: `Sync completed successfully`,
+            summary: results.summary,
+            processed: results.results.length,
+            errors: results.errors,
+            timestamp: new Date().toISOString()
+        });
+
+    } catch (error) {
+        console.error('Sync error:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Sync failed',
+            message: error.message,
+            timestamp: new Date().toISOString()
+        });
+    }
+});
+
+// Endpoint per sincronizzazione singolo prodotto (utile per test)
+app.post('/api/sync-single', async (req, res) => {
+    try {
+        const { storeId, apiToken, product } = req.body;
+        
+        if (!storeId || !apiToken || !product) {
+            return res.status(400).json({
+                error: 'Missing required fields: storeId, apiToken, product'
+            });
+        }
+
+        const syncManager = new EcwidSyncManager({ storeId, apiToken });
+        const result = await syncManager.upsertProduct(product);
+        
+        res.json({
+            success: true,
+            result,
+            timestamp: new Date().toISOString()
+        });
+
+    } catch (error) {
+        console.error('Single sync error:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Single product sync failed',
+            message: error.message,
+            timestamp: new Date().toISOString()
+        });
+    }
+});
+
+// Error handler globale
+app.use((error, req, res, next) => {
+    console.error('Global error:', error);
+    res.status(500).json({
+        error: 'Internal server error',
+        message: error.message,
+        timestamp: new Date().toISOString()
+    });
+});
+
+// 404 handler
+app.use('*', (req, res) => {
+    res.status(404).json({
+        error: 'Endpoint not found',
+        path: req.originalUrl,
+        available_endpoints: [
+            'GET /health',
+            'GET /api/status', 
+            'POST /api/test-connection',
+            'POST /api/sync',
+            'POST /api/sync-single'
+        ],
+        timestamp: new Date().toISOString()
+    });
+});
+
+// Avvio server
+const server = app.listen(PORT, '0.0.0.0', () => {
+    console.log('\n🚀 Ecwid Sync Server Successfully Started!');
+    console.log(`📊 Server running on port: ${PORT}`);
+    console.log(`🔗 Health check: http://localhost:${PORT}/health`);
+    console.log(`🔄 Sync endpoint: http://localhost:${PORT}/api/sync`);
+    console.log(`📡 Status: http://localhost:${PORT}/api/status`);
+    console.log(`⚡ Ready for product synchronization!\n`);
+});
+
+// Graceful shutdown
+process.on('SIGTERM', () => {
+    console.log('📴 Server shutting down gracefully...');
+    server.close(() => {
+        process.exit(0);
+    });
+});
+
+process.on('SIGINT', () => {
+    console.log('📴 Server shutting down gracefully...');
+    server.close(() => {
+        process.exit(0);
+    });
+});
+
+module.exports = app;
