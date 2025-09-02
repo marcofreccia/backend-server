@@ -33,7 +33,7 @@ class EcwidSyncManager {
       logFile: 'ecwid-sync.log',
       minPrice: 40.0,
       priceMultiplier: 2.0,
-      useBulkMedia: true, // Nuovo flag per bulk media
+      useBulkMedia: false, // SEMPRE DISABILITATO
       ...config
     };
 
@@ -100,7 +100,7 @@ class EcwidSyncManager {
         await this.enforceRateLimit();
         const result = await operation();
         if (attempt > 1) {
-          await this.log(`Success ${context} succeeded on attempt ${attempt}`);
+          await this.log(`✓ ${context} succeeded on attempt ${attempt}`);
         }
         return result;
       } catch (error) {
@@ -120,7 +120,7 @@ class EcwidSyncManager {
         );
         
         await this.log(
-          `Warning ${context} failed (attempt ${attempt}/${this.config.maxRetries}): ${error.message}. Retrying in ${delay}ms...`,
+          `⚠ ${context} failed (attempt ${attempt}/${this.config.maxRetries}): ${error.message}. Retrying in ${delay}ms...`,
           'WARN'
         );
         
@@ -183,7 +183,7 @@ class EcwidSyncManager {
   // Test connessione migliorato con diagnostica
   async testConnection() {
     try {
-      await this.log('Testing API connection with enhanced diagnostics...');
+      await this.log('🔍 Testing API connection with enhanced diagnostics...');
       const profile = await this.makeRequest('GET', '/profile');
       const storeInfo = {
         storeUrl: profile.generalInfo?.storeUrl,
@@ -193,13 +193,13 @@ class EcwidSyncManager {
         country: profile.generalInfo?.storeLocation?.country
       };
       
-      await this.log(`Connected successfully to store: ${storeInfo.storeName} (${storeInfo.storeUrl})`);
-      await this.log(`Plan: ${storeInfo.plan} | Store ID: ${storeInfo.storeId} | Location: ${storeInfo.country}`);
+      await this.log(`✅ Connected successfully to store: ${storeInfo.storeName} (${storeInfo.storeUrl})`);
+      await this.log(`📊 Plan: ${storeInfo.plan} | Store ID: ${storeInfo.storeId} | Location: ${storeInfo.country}`);
       return { success: true, store: storeInfo };
     } catch (error) {
-      await this.log(`API connection failed: ${error.message}`, 'ERROR');
+      await this.log(`❌ API connection failed: ${error.message}`, 'ERROR');
       if (error.response) {
-        await this.log(`Response Status: ${error.response.status} ${error.response.statusText}`, 'ERROR');
+        await this.log(`📊 Response Status: ${error.response.status} ${error.response.statusText}`, 'ERROR');
       }
       return { success: false, error: error.message, status: error.status };
     }
@@ -279,60 +279,11 @@ class EcwidSyncManager {
     }
   }
 
-  // Bulk Media Upload (nuovo metodo)
-  async bulkUploadMedia(productId, mainImageUrl, galleryImages, sku) {
-    if (!mainImageUrl && (!galleryImages || galleryImages.length === 0)) {
-      return null;
-    }
-
-    await this.log(`Processing images for product ${sku} using bulk method...`);
-
-    try {
-      const mediaPayload = {};
-      
-      // Processa immagine principale
-      if (mainImageUrl) {
-        const validMainUrl = await this.processImageUrl(mainImageUrl, sku);
-        if (validMainUrl) {
-          mediaPayload.mainMedia = { imageUrl: validMainUrl };
-        }
-      }
-      
-      // Processa immagini gallery
-      if (galleryImages && galleryImages.length > 0) {
-        const validGalleryUrls = [];
-        for (const imgUrl of galleryImages.slice(0, 15)) {
-          const validUrl = await this.processImageUrl(imgUrl, sku);
-          if (validUrl) {
-            validGalleryUrls.push({ imageUrl: validUrl });
-          }
-        }
-        if (validGalleryUrls.length > 0) {
-          mediaPayload.galleryMedia = validGalleryUrls;
-        }
-      }
-
-      // Esegui bulk upload
-      if (Object.keys(mediaPayload).length > 0) {
-        await this.withRetry(async () => {
-          return await this.makeRequest('PUT', `/products/${productId}/media`, mediaPayload, {}, 120000);
-        }, `Bulk upload media for ${sku}`);
-        
-        await this.log(`Bulk media uploaded for ${sku}: ${mediaPayload.mainMedia ? '1 main + ' : ''}${mediaPayload.galleryMedia?.length || 0} gallery images`);
-        return true;
-      }
-      return false;
-    } catch (error) {
-      await this.log(`Bulk media upload failed for ${sku}: ${error.message}. Falling back to individual uploads...`, 'WARN');
-      
-      // Fallback to individual uploads
-      return await this.fallbackUploadMedia(productId, mainImageUrl, galleryImages, sku);
-    }
-  }
-
-  // Fallback: Upload immagini individuali
-  async fallbackUploadMedia(productId, mainImageUrl, galleryImages, sku) {
+  // Upload immagini individuali (metodo principale ora)
+  async uploadMedia(productId, mainImageUrl, galleryImages, sku) {
     let uploadedCount = 0;
+    
+    await this.log(`📸 Processing images for product ${sku} using individual uploads...`);
     
     try {
       // Upload main image
@@ -340,9 +291,9 @@ class EcwidSyncManager {
         try {
           await this.uploadProductImage(productId, mainImageUrl, true, sku);
           uploadedCount++;
-          await this.sleep(300);
+          await this.sleep(300); // Pausa tra main e gallery
         } catch (error) {
-          await this.log(`Failed to upload main image for ${sku}: ${error.message}`, 'WARN');
+          await this.log(`⚠️ Failed to upload main image for ${sku}: ${error.message}`, 'WARN');
         }
       }
 
@@ -353,17 +304,20 @@ class EcwidSyncManager {
           try {
             await this.uploadProductImage(productId, galleryImages[i], false, sku);
             uploadedCount++;
-            await this.sleep(400);
+            await this.sleep(400); // Pausa tra immagini gallery
           } catch (error) {
-            await this.log(`Failed to upload gallery image ${i+1} for ${sku}: ${error.message}`, 'WARN');
+            await this.log(`⚠️ Failed to upload gallery image ${i+1} for ${sku}: ${error.message}`, 'WARN');
           }
         }
       }
 
-      await this.log(`Fallback upload completed for ${sku}: ${uploadedCount} images uploaded`);
+      if (uploadedCount > 0) {
+        await this.log(`✅ Image processing completed for ${sku}: ${uploadedCount} images uploaded`);
+      }
+      
       return uploadedCount > 0;
     } catch (error) {
-      await this.log(`Fallback image upload failed for ${sku}: ${error.message}`, 'ERROR');
+      await this.log(`❌ Image upload failed for ${sku}: ${error.message}`, 'ERROR');
       return false;
     }
   }
@@ -382,7 +336,7 @@ class EcwidSyncManager {
         alt: `${productSku} - ${isMain ? 'Main' : 'Gallery'} Image`
       };
       const result = await this.makeRequest('POST', endpoint, imageData, {}, 120000);
-      await this.log(`${isMain ? 'Main' : 'Gallery'} image uploaded for ${productSku}`);
+      await this.log(`✅ ${isMain ? 'Main' : 'Gallery'} image uploaded for ${productSku}`);
       return result;
     }, `Upload ${isMain ? 'main' : 'gallery'} image for product ${productId}`);
   }
@@ -392,7 +346,7 @@ class EcwidSyncManager {
     const sku = productData.sku;
     if (!sku || !productData.name) {
       this.stats.error++;
-      await this.log(`Missing required fields (SKU or name) for product`, 'ERROR');
+      await this.log(`❌ Missing required fields (SKU or name) for product`, 'ERROR');
       return { success: false, error: 'Missing required fields: SKU and name are mandatory' };
     }
 
@@ -400,7 +354,7 @@ class EcwidSyncManager {
     const validation = this.validateAndFilterProduct(productData);
     if (!validation.isValid) {
       this.stats.filtered++;
-      await this.log(`Filtered product ${sku}: ${validation.reason}`);
+      await this.log(`🔽 Filtered product ${sku}: ${validation.reason}`);
       return { success: false, filtered: true, reason: validation.reason, sku };
     }
 
@@ -448,25 +402,21 @@ class EcwidSyncManager {
           return await this.makeRequest('PUT', `/products/${existingProduct.id}`, productPayload);
         }, `Update product ${sku}`);
         this.stats.updated++;
-        await this.log(`Updated existing product: ${sku} (ID: ${existingProduct.id}) - Price: €${processedProduct.originalPrice} → €${processedProduct.price}`);
+        await this.log(`🔄 Updated existing product: ${sku} (ID: ${existingProduct.id}) - Price: €${processedProduct.originalPrice} → €${processedProduct.price}`);
       } else {
         // Creazione nuovo prodotto
         result = await this.withRetry(async () => {
           return await this.makeRequest('POST', '/products', productPayload);
         }, `Create product ${sku}`);
         this.stats.created++;
-        await this.log(`Created new product: ${sku} (ID: ${result.id}) - Price: €${processedProduct.originalPrice} → €${processedProduct.price}`);
+        await this.log(`🆕 Created new product: ${sku} (ID: ${result.id}) - Price: €${processedProduct.originalPrice} → €${processedProduct.price}`);
       }
 
       const productId = result.id || existingProduct?.id;
 
-      // Gestione immagini con bulk upload e fallback
+      // Gestione immagini con upload individuali
       if (productId && (mainImageUrl || galleryImages.length > 0)) {
-        if (this.config.useBulkMedia) {
-          await this.bulkUploadMedia(productId, mainImageUrl, galleryImages, sku);
-        } else {
-          await this.fallbackUploadMedia(productId, mainImageUrl, galleryImages, sku);
-        }
+        await this.uploadMedia(productId, mainImageUrl, galleryImages, sku);
       }
 
       this.stats.success++;
@@ -488,7 +438,7 @@ class EcwidSyncManager {
         status: error.status,
         timestamp: new Date().toISOString()
       });
-      await this.log(`Failed to process ${sku}: ${error.message}`, 'ERROR');
+      await this.log(`❌ Failed to process ${sku}: ${error.message}`, 'ERROR');
       return { success: false, error: error.message, status: error.status, sku };
     }
   }
@@ -505,8 +455,8 @@ class EcwidSyncManager {
       throw new Error(`Cannot establish API connection: ${connectionTest.error}`);
     }
 
-    await this.log(`Starting enhanced sync of ${products.length} products in batches of ${this.config.batchSize}`);
-    await this.log(`Configuration: Min Price: €${this.config.minPrice}, Price Multiplier: ${this.config.priceMultiplier}x, Request Delay: ${this.config.requestDelay}ms`);
+    await this.log(`🚀 Starting enhanced sync of ${products.length} products in batches of ${this.config.batchSize}`);
+    await this.log(`⚙️ Configuration: Min Price: €${this.config.minPrice}, Price Multiplier: ${this.config.priceMultiplier}x, Request Delay: ${this.config.requestDelay}ms`);
 
     const startIndex = this.lastProcessedIndex;
     const totalBatches = Math.ceil((products.length - startIndex) / this.config.batchSize);
@@ -519,7 +469,7 @@ class EcwidSyncManager {
       const batchEnd = Math.min(batchStart + this.config.batchSize, products.length);
       const batch = products.slice(batchStart, batchEnd);
 
-      await this.log(`Processing batch ${batchIndex + 1}/${totalBatches} (products ${batchStart + 1}-${batchEnd})`);
+      await this.log(`📦 Processing batch ${batchIndex + 1}/${totalBatches} (products ${batchStart + 1}-${batchEnd})`);
 
       for (const product of batch) {
         try {
@@ -551,7 +501,7 @@ class EcwidSyncManager {
           // Rate limiting tra prodotti
           await this.sleep(this.config.requestDelay);
         } catch (error) {
-          await this.log(`Critical error processing ${product.sku}: ${error.message}`, 'CRITICAL');
+          await this.log(`💥 Critical error processing ${product.sku}: ${error.message}`, 'CRITICAL');
           results.push({
             success: false,
             error: error.message,
@@ -564,13 +514,13 @@ class EcwidSyncManager {
       // Pausa più lunga tra batch
       if (batchIndex < totalBatches - 1) {
         const batchDelay = 3000 + (Math.random() * 2000);
-        await this.log(`Batch ${batchIndex + 1} completed. Waiting ${batchDelay}ms before next batch...`);
+        await this.log(`⏸️ Batch ${batchIndex + 1} completed. Waiting ${batchDelay}ms before next batch...`);
         await this.sleep(batchDelay);
       }
     }
 
     const finalReport = await this.generateReport();
-    await this.log(`Enhanced sync completed! Processed: ${processedCount}, Skipped: ${skippedCount}, Errors: ${this.stats.error}`);
+    await this.log(`🎉 Enhanced sync completed! Processed: ${processedCount}, Skipped: ${skippedCount}, Errors: ${this.stats.error}`);
 
     return {
       success: true,
@@ -613,14 +563,14 @@ class EcwidSyncManager {
       logs: this.logs.slice(-50)
     };
 
-    await this.log(`\n=== ENHANCED SYNC REPORT ===`);
-    await this.log(`Duration: ${report.summary.duration_human}`);
-    await this.log(`Total Input: ${report.summary.total_input} products`);
-    await this.log(`Successful: ${report.summary.success} (Created: ${report.summary.created}, Updated: ${report.summary.updated})`);
-    await this.log(`Filtered: ${report.summary.filtered} (below €${this.config.minPrice})`);
-    await this.log(`Errors: ${report.summary.error}`);
-    await this.log(`Success Rate: ${report.summary.success_rate}`);
-    await this.log(`Config: Batch ${this.config.batchSize}, Delay ${this.config.requestDelay}ms, Min €${this.config.minPrice}, ${this.config.priceMultiplier}x price`);
+    await this.log(`\n📊 === ENHANCED SYNC REPORT ===`);
+    await this.log(`⏱️ Duration: ${report.summary.duration_human}`);
+    await this.log(`📈 Total Input: ${report.summary.total_input} products`);
+    await this.log(`✅ Successful: ${report.summary.success} (Created: ${report.summary.created}, Updated: ${report.summary.updated})`);
+    await this.log(`🔽 Filtered: ${report.summary.filtered} (below €${this.config.minPrice})`);
+    await this.log(`❌ Errors: ${report.summary.error}`);
+    await this.log(`📊 Success Rate: ${report.summary.success_rate}`);
+    await this.log(`⚙️ Config: Batch ${this.config.batchSize}, Delay ${this.config.requestDelay}ms, Min €${this.config.minPrice}, ${this.config.priceMultiplier}x price`);
 
     return report;
   }
@@ -682,7 +632,7 @@ app.get('/api/status', (req, res) => {
       'Price filtering (min €40)',
       'Price doubling',
       'Enhanced rate limiting',
-      'Bulk media upload with fallback',
+      'Individual image uploads',
       'Homepage control (showOnFrontpage: -1)',
       'Advanced error handling',
       'Image validation & upload',
@@ -701,7 +651,7 @@ app.get('/api/status', (req, res) => {
       default_request_delay: '500ms',
       min_price_filter: '€40',
       price_multiplier: '2x',
-      bulk_media_support: true
+      bulk_media_support: false
     }
   });
 });
@@ -719,7 +669,11 @@ app.post('/api/test-connection', async (req, res) => {
       });
     }
 
-    const syncManager = new EcwidSyncManager({ storeId, apiToken });
+    const syncManager = new EcwidSyncManager({ 
+      storeId, 
+      apiToken,
+      useBulkMedia: false // DISABILITATO
+    });
     const result = await syncManager.testConnection();
 
     if (result.success) {
@@ -778,14 +732,14 @@ app.post('/api/sync', async (req, res) => {
       requestDelay: options.requestDelay || 500,
       minPrice: options.minPrice || 40.0,
       priceMultiplier: options.priceMultiplier || 2.0,
-      useBulkMedia: options.useBulkMedia !== false
+      useBulkMedia: false // SEMPRE DISABILITATO
     });
 
-    console.log(`Starting enhanced sync for ${products.length} products with optimizations...`);
+    console.log(`🚀 Starting enhanced sync for ${products.length} products with optimizations...`);
 
     const results = await syncManager.syncProducts(products, (progress) => {
       if (progress.processed % 10 === 0 || progress.processed === progress.total) {
-        console.log(`Progress: ${progress.processed}/${progress.total} (${Math.round(progress.processed/progress.total*100)}%) - Success: ${progress.successful}, Skipped: ${progress.skipped}`);
+        console.log(`📊 Progress: ${progress.processed}/${progress.total} (${Math.round(progress.processed/progress.total*100)}%) - Success: ${progress.successful}, Skipped: ${progress.skipped}`);
       }
     });
 
@@ -828,7 +782,7 @@ app.post('/api/sync-single', async (req, res) => {
       apiToken,
       minPrice: options.minPrice || 40.0,
       priceMultiplier: options.priceMultiplier || 2.0,
-      useBulkMedia: options.useBulkMedia !== false
+      useBulkMedia: false // SEMPRE DISABILITATO
     });
 
     const result = await syncManager.upsertProduct(product);
@@ -880,44 +834,44 @@ app.use('*', (req, res) => {
       'POST /api/sync-single - Sync single product with optimizations',
       'POST /api/sync - Batch sync with all enhancements'
     ],
-    documentation: 'Enhanced version with bulk media upload, price filtering, doubling, and optimized rate limiting',
+    documentation: 'Enhanced version with individual image uploads, price filtering, doubling, and optimized rate limiting',
     timestamp: new Date().toISOString()
   });
 });
 
 // Avvio server con informazioni complete
 const server = app.listen(PORT, '0.0.0.0', () => {
-  console.log('\n=== Ecwid Enhanced Sync Server v2.1.0 Successfully Started ===');
-  console.log(`Server running on port: ${PORT}`);
-  console.log(`Health check: http://localhost:${PORT}/health`);
-  console.log(`Enhanced sync: http://localhost:${PORT}/api/sync`);
-  console.log(`Status: http://localhost:${PORT}/api/status`);
-  console.log(`\n=== Enhanced Configuration ===`);
-  console.log(`Price Filter: Products below €40 will be filtered out`);
-  console.log(`Price Doubling: All prices multiplied by 2x (€20 → €40)`);
-  console.log(`Rate Limiting: 500ms delay between requests (slower for stability)`);
-  console.log(`Batch Size: 10 products per batch (reduced from 25)`);
-  console.log(`Max Retries: 7 attempts with exponential backoff`);
-  console.log(`Bulk Media: Enabled with fallback to individual uploads`);
-  console.log(`Homepage Control: Products automatically removed from front page`);
-  console.log(`Image Upload: Enhanced validation and error handling`);
-  console.log(`Logging: Comprehensive tracking and error reporting`);
-  console.log(`\nReady for enhanced product synchronization! 🎯\n`);
+  console.log('\n🚀 === Ecwid Enhanced Sync Server v2.1.0 Successfully Started ===');
+  console.log(`📊 Server running on port: ${PORT}`);
+  console.log(`🔗 Health check: http://localhost:${PORT}/health`);
+  console.log(`🔄 Enhanced sync: http://localhost:${PORT}/api/sync`);
+  console.log(`📡 Status: http://localhost:${PORT}/api/status`);
+  console.log(`\n⚙️ === Enhanced Configuration ===`);
+  console.log(`💰 Price Filter: Products below €40 will be filtered out`);
+  console.log(`📈 Price Doubling: All prices multiplied by 2x (€20 → €40)`);
+  console.log(`🐌 Rate Limiting: 500ms delay between requests (slower for stability)`);
+  console.log(`📦 Batch Size: 10 products per batch (reduced from 25)`);
+  console.log(`🔄 Max Retries: 7 attempts with exponential backoff`);
+  console.log(`📸 Image Upload: Individual uploads (300ms main, 400ms gallery)`);
+  console.log(`🏠 Homepage Control: Products automatically removed from front page`);
+  console.log(`📝 Logging: Comprehensive tracking and error reporting`);
+  console.log(`⚠️ Bulk Media: DISABLED (using individual endpoints)`);
+  console.log(`\n⚡ Ready for enhanced product synchronization! 🎯\n`);
 });
 
 // Graceful shutdown migliorato
 process.on('SIGTERM', () => {
-  console.log('Enhanced server shutting down gracefully...');
+  console.log('📴 Enhanced server shutting down gracefully...');
   server.close(() => {
-    console.log('Server closed successfully');
+    console.log('✅ Server closed successfully');
     process.exit(0);
   });
 });
 
 process.on('SIGINT', () => {
-  console.log('Enhanced server shutting down gracefully...');
+  console.log('📴 Enhanced server shutting down gracefully...');
   server.close(() => {
-    console.log('Server closed successfully');
+    console.log('✅ Server closed successfully');
     process.exit(0);
   });
 });
